@@ -24,6 +24,10 @@
 #include "exec/helper-proto.h"
 #include "hw/avr32/boot.h"
 #include "qemu/qemu-print.h"
+#include "qemu/timer.h"
+
+/* Core COUNT runs at the CPU clock; NanoMind A3200 firmware uses 32 MHz. */
+#define AVR32_COUNT_HZ 32000000ULL
 
 static inline void raise_exception(CPUAVR32AState *env, int index,
         uintptr_t retaddr);
@@ -188,4 +192,11 @@ void helper_macsathhw(CPUAVR32AState *env, uint32_t rd, uint32_t op1,  uint32_t 
         env->sflags[sflagQ] = 1;
     }
     env->r[rd] = res;
+}
+
+uint32_t HELPER(avr32_read_count)(CPUAVR32AState *env)
+{
+    (void)env;
+    return (uint32_t)muldiv64(qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
+                              AVR32_COUNT_HZ, NANOSECONDS_PER_SECOND);
 }

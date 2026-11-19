@@ -2302,9 +2302,8 @@ static bool trans_MFSR(DisasContext *ctx, arg_MFSR *a){
     }
         // Read COUNT register
     else if((a->sr)== 66){
-        //Read timer counter value from at32uc3_timer device
-        tcg_gen_movi_i32(sr, 0xfffd2000 + 0x90);
-        tcg_gen_qemu_ld_i32(sr, sr, 0x0, MO_BEUL);
+        /* COUNT is a core register driven by virtual time, not TC channel 2. */
+        gen_helper_avr32_read_count(sr, cpu_env);
     }
     else{
         tcg_gen_mov_i32(sr, cpu_sysr[a->sr]);

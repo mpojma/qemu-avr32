@@ -22,6 +22,7 @@ DEF_HELPER_1(debug, noreturn, env)
 DEF_HELPER_1(break, noreturn, env)
 DEF_HELPER_4(macsathhw, void, env, i32, i32, i32)
 DEF_HELPER_5(cop, void, env, i32, i32, i32, i32)
+DEF_HELPER_1(avr32_read_count, i32, env)
 
 
 #ifndef QEMU_AVR32_HELPER
