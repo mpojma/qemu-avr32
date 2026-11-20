@@ -2261,6 +2261,9 @@ static bool trans_MAX(DisasContext *ctx, arg_MAX *a){
 }
 
 static bool trans_MCALL(DisasContext *ctx, arg_MCALL *a){
+    /* AVR32 ABI: mcall is used for calls through a table; callees may return
+     * with 'retal r12', so the return address must be in r12 as well as LR. */
+    tcg_gen_movi_i32(cpu_r[12], ctx->base.pc_next + 4);
     tcg_gen_addi_i32(cpu_r[LR_REG], cpu_r[PC_REG], 0x4);
     TCGv PC = cpu_r[PC_REG];
 
