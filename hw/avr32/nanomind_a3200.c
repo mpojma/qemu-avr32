@@ -21,14 +21,37 @@
 #include "qemu/osdep.h"
 #include "qemu/units.h"
 #include "qapi/error.h"
+#include "qemu/error-report.h"
 #include "at32uc3.h"
 #include "boot.h"
 #include "qom/object.h"
 #include "hw/boards.h"
 #include "hw/loader.h"
 #include "hw/qdev-properties.h"
+#include "chardev/char.h"
 #include "at32uc3_twim.h"
 #include "hw/avr32/avr32_log.h"
+
+/* Chardev id for the GNSS USART (USART1).  Set with -gnss-chardev <id> after
+ * defining the chardev with -chardev socket,id=<id>,... */
+static char *gnss_chardev_id;
+
+static char *nanomind_get_gnss_chardev(Object *obj, Error **errp)
+{
+    (void) obj;
+    (void) errp;
+    return g_strdup(gnss_chardev_id ? gnss_chardev_id : "");
+}
+
+static void nanomind_set_gnss_chardev(Object *obj, const char *value,
+                                      Error **errp)
+{
+    (void) obj;
+    (void) errp;
+    g_free(gnss_chardev_id);
+    gnss_chardev_id = g_strdup(value);
+}
+
 struct NanomindA3200MachineState {
     /*< private >*/
     MachineState parent_obj;
@@ -74,6 +97,19 @@ static void nanomind_3200_init(MachineState *machine)
     AVR32_LOG_DEV("Setting up board...\n");
 
     object_initialize_child(OBJECT(machine), "soc", &nmms->soc, TYPE_AT32UC3C0512C_SOC);
+
+    /* Bind the optional GNSS chardev to USART1 before the SoC is realized;
+     * UART0 keeps the legacy console behaviour (no chardev bound). */
+    if (gnss_chardev_id && *gnss_chardev_id) {
+        Chardev *gnss_chr = qemu_chr_find(gnss_chardev_id);
+        if (!gnss_chr) {
+            error_report("gnss-chardev: no chardev with id '%s'", gnss_chardev_id);
+            exit(1);
+        }
+        qdev_prop_set_chr(DEVICE(&nmms->soc.uart1), "chardev", gnss_chr);
+        AVR32_LOG_DEV("GNSS USART1 bound to chardev '%s'\n", gnss_chardev_id);
+    }
+
     sysbus_realize(SYS_BUS_DEVICE(&nmms->soc), &error_abort);
 
     const int spi_num_buses = 2;
@@ -169,6 +205,12 @@ static void nanomind_3200_class_init(ObjectClass *oc, void *data)
     mc->no_floppy = 1;
     mc->no_cdrom = 1;
     mc->no_parallel = 1;
+
+    object_class_property_add_str(oc, "gnss-chardev",
+                                  nanomind_get_gnss_chardev,
+                                  nanomind_set_gnss_chardev);
+    object_class_property_set_description(oc, "gnss-chardev",
+        "Chardev id to attach to the GNSS USART (USART1)");
 }
 
 static const TypeInfo nanomind_a3200_machine_types[] = {

@@ -39,7 +39,10 @@ static const uint32_t pdca_addr = 0xfffd0000;
 static const uint32_t can_addr = 0xfffd1c00;
 static const uint32_t tc_addr = 0xfffd2000;
 static const uint32_t adcifa_addr = 0xfffd2400;
-static const uint32_t uart_addr = 0xfffd2800;
+/* USART0 at shadow offset 0x2800 -> 0xfffd2800; USART1 at shadow offset
+ * 0x21400 -> 0xfffd1400, following the same high-bank mapping used by PDCA
+ * (0x20000 -> 0xfffd0000) and ADCIFA (0x22400 -> 0xfffd2400). */
+static const uint32_t uart_addr[AT32UC3C_MAX_UART] = { 0xfffd2800, 0xfffd1400 };
 static const uint32_t twim_addr[AT32UC3C_MAX_TWI] = { 0xFFFF3800, 0xFFFF3c00, 0xFFFD2c00};
 static const uint32_t twis_addr[AT32UC3C_MAX_TWI] = { 0xFFFF4000, 0xFFFF4400, 0xFFFD3000};
 static const uint32_t intc_addr = 0xffff0000;
@@ -54,7 +57,10 @@ static const int twim_irq[AT32UC3C_MAX_TWI] = {AT32UC3C_IRQ_TWIM0, AT32UC3C_IRQ_
 static const int twis_irq[AT32UC3C_MAX_TWI] = {AT32UC3C_IRQ_TWIS0, AT32UC3C_IRQ_TWIS1, AT32UC3C_IRQ_TWIS2};
 static const int pdca_irq = 16;
 static const int adcifa_irq = 17;
-static const int uart_irq = 18;
+/* IRQ numbers are arbitrary INTC input indices in this model (see TODO above).
+ * USART0 keeps the historic 18; USART1 gets 21 to avoid collisions with
+ * CAN (19) and SCIF (20). */
+static const int uart_irq[AT32UC3C_MAX_UART] = { 18, 21 };
 static const int can_irq = 19;
 static const int scif_irq = 20;
 
@@ -232,14 +238,22 @@ static void at32uc3_realize(DeviceState *dev_soc, Error **errp)
     sysbus_mmio_map(busdev, 0, adcifa_addr);
     sysbus_connect_irq(busdev, 0, qdev_get_gpio_in(intc_dev, adcifa_irq));
 
-    /* uart */
-    dev = DEVICE(&(s->uart));
-    if (!sysbus_realize(SYS_BUS_DEVICE(&s->uart), errp)) {
-        return;
+    /* uarts */
+    for (i = 0; i < mc->uart_count; ++i) {
+        AT32UC3UARTState *uart = (i == 0) ? &s->uart : &s->uart1;
+        dev = DEVICE(uart);
+        /* USART1 must not truncate the UART0 console log when no GNSS
+         * chardev is bound. */
+        if (i != 0) {
+            qdev_prop_set_bit(dev, "legacy-output", false);
+        }
+        if (!sysbus_realize(SYS_BUS_DEVICE(uart), errp)) {
+            return;
+        }
+        busdev = SYS_BUS_DEVICE(dev);
+        sysbus_mmio_map(busdev, 0, uart_addr[i]);
+        sysbus_connect_irq(busdev, 0, qdev_get_gpio_in(intc_dev, uart_irq[i]));
     }
-    busdev = SYS_BUS_DEVICE(dev);
-    sysbus_mmio_map(busdev, 0, uart_addr);
-    sysbus_connect_irq(busdev, 0, qdev_get_gpio_in(intc_dev,uart_irq));
 
     /* can */
     dev = DEVICE(&(s->can));
@@ -282,7 +296,11 @@ static void at32uc3c_inst_init(Object *obj)
     object_initialize_child(obj, "timer", &s->timer, TYPE_AT32UC3_TIMER);
     object_initialize_child(obj, "pdca", &s->pdca, TYPE_AT32UC3_PDCA);
     object_initialize_child(obj, "adcifa", &s->adcifa, TYPE_AT32UC3_ADCIFA);
-    object_initialize_child(obj, "uart", &s->uart, TYPE_AT32UC3_UART);
+    for (i = 0; i < mc->uart_count; i++) {
+        AT32UC3UARTState *uart = (i == 0) ? &s->uart : &s->uart1;
+        object_initialize_child(obj, i == 0 ? "uart" : "uart1", uart,
+                                TYPE_AT32UC3_UART);
+    }
     object_initialize_child(obj, "can", &s->can, TYPE_AT32UC3_CAN);
     object_initialize_child(obj, "scif", &s->scif, TYPE_AT32UC3_SCIF);
     object_initialize_child(obj, "intc", &s->intc, TYPE_AT32UC3_INTC);
@@ -317,7 +335,7 @@ static void at32uc3c0512c_class_init(ObjectClass *oc, void *data)
     at32uc3->twim_count = 3;
     at32uc3->twis_count = 3;
     at32uc3->adcifa_count = 1;
-    at32uc3->uart_count = 1;
+    at32uc3->uart_count = 2;
     at32uc3->scif_count = 1;
     at32uc3->intc_count = 1;
     at32uc3->gpioc_count = 1;

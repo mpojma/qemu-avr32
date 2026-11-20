@@ -41,6 +41,7 @@
 
 #define AT32UC3C_MAX_SPIS 2
 #define AT32UC3C_MAX_TWI 3
+#define AT32UC3C_MAX_UART 2
 
 #define AT32UC3C_IRQ_TC02 10
 
