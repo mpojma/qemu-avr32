@@ -19,6 +19,10 @@
  */
 
 #include "qemu/osdep.h"
+#include "sysemu/block-backend.h"
+#include "hw/block/block.h"
+#include "hw/qdev-properties.h"
+#include "hw/qdev-properties-system.h"
 #include "hw/ssi/ssi.h"
 #include "qemu/module.h"
 #include "qom/object.h"
@@ -60,7 +64,11 @@ struct FM33256BState {
     uint8_t status;
 
     uint8_t regs[FM33256B_REGS_COUNT];
-    uint8_t data[FM33256B_MAX_DATA];
+
+    /* Optional persistent storage.  When a drive is attached, storage points
+     * into the BlockBackend buffer; otherwise it is a private RAM buffer. */
+    BlockBackend *blk;
+    uint8_t *storage;
 };
 
 typedef struct FM33256BState FM33256BState;
@@ -96,7 +104,10 @@ static void fm33256b_reset(DeviceState *dev)
     s->addr = 0;
     s->cmd = 0;
 
-    memset(s->data, 0, FM33256B_MAX_DATA);
+    /* Storage is allocated/loaded in realize(), not here.  Reset runs before
+     * realize and would otherwise wipe persisted content.  Companion regs
+     * stay in RAM with their power-on defaults on every reset. */
+    s->storage = NULL;
 
     memset(s->regs, 0, FM33256B_REGS_COUNT);
 
@@ -110,6 +121,26 @@ static void fm33256b_reset(DeviceState *dev)
     s->regs[0x1c] = 0x81;
     s->regs[0x1d] = 0x81;
 
+}
+
+/* Write the whole 32 KB working copy back to the backing file.  Synchronous
+ * blk_pwrite keeps this simple and deterministic for 32 KB; no-op without a
+ * drive. */
+static void fm33256b_sync(FM33256BState *s)
+{
+    int ret;
+
+    if (!s->blk) {
+        return;
+    }
+
+    /* blk_pwrite(blk, offset, bytes, buf, flags) */
+    ret = blk_pwrite(s->blk, 0, FM33256B_MAX_DATA, s->storage, 0);
+    if (ret < 0) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "[fm33256b_sync] failed to persist FRAM: %s\n",
+                      strerror(-ret));
+    }
 }
 
 static uint32_t fm33256b_transfer8(SSIPeripheral *ss, uint32_t tx)
@@ -170,14 +201,15 @@ static uint32_t fm33256b_transfer8(SSIPeripheral *ss, uint32_t tx)
                 }
                 case FM33256B_WRITE: {
                     if(s->status & FM33256B_STATUS_WEL) {
-                        s->data[s->addr] = tx & 0xff;
+                        s->storage[s->addr] = tx & 0xff;
                         fm33256b_update_addr(s);
+                        fm33256b_sync(s);
                     }
                     break;
                 }
                 case FM33256B_READ: {
-                    ret = s->data[s->addr];
-                    AVR32_LOG_DEV("[fm33256b_transfer8] FM33256B_READ data[0x%x]=0x%x\n", s->addr, ret);
+                    ret = s->storage[s->addr];
+                    AVR32_LOG_DEV("[fm33256b_transfer8] FM33256B_READ storage[0x%x]=0x%x\n", s->addr, ret);
 
                     fm33256b_update_addr(s);
                     break;
@@ -249,13 +281,36 @@ static int fm33256b_cs(SSIPeripheral *ss, bool select)
 
 static void fm33256b_realize(SSIPeripheral *ss, Error **errp)
 {
+    FM33256BState* s = FM33256B(ss);
+    int ret;
 
+    if (s->blk) {
+        uint64_t perm = BLK_PERM_CONSISTENT_READ | BLK_PERM_WRITE;
+        ret = blk_set_perm(s->blk, perm, BLK_PERM_ALL, errp);
+        if (ret < 0) {
+            return;
+        }
+
+        s->storage = blk_blockalign(s->blk, FM33256B_MAX_DATA);
+        if (!blk_check_size_and_read_all(s->blk, s->storage,
+                                         FM33256B_MAX_DATA, errp)) {
+            return;
+        }
+    } else {
+        s->storage = blk_blockalign(NULL, FM33256B_MAX_DATA);
+        memset(s->storage, 0, FM33256B_MAX_DATA);
+    }
 }
 
 static void fm33256b_inst_init(Object *obj)
 {
 
 }
+
+static Property fm33256b_properties[] = {
+    DEFINE_PROP_DRIVE("drive", FM33256BState, blk),
+    DEFINE_PROP_END_OF_LIST(),
+};
 
 static void fm33256b_class_init(ObjectClass *klass, void *data)
 {
@@ -268,7 +323,7 @@ static void fm33256b_class_init(ObjectClass *klass, void *data)
     k->set_cs = fm33256b_cs;
     k->cs_polarity = SSI_CS_LOW;
 //    dc->vmsd = &vmstate_m25p80;
-//    device_class_set_props(dc, m25p80_properties);
+    device_class_set_props(dc, fm33256b_properties);
     dc->reset = fm33256b_reset;
 //    mc->pi = data;
 }
