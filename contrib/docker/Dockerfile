@@ -31,8 +31,10 @@
 #   qemu-system-avr32 -d help          # list available log categories
 #   (qemu) log avr32_dev / log none    # toggle categories at runtime
 #
-# This image builds from the LOCAL source tree so every committed fix is
-# included. The .dockerignore at the context root keeps git/build artifacts out.
+# This image clones the avr32-nanomind branch from the canonical remote so the
+# build is reproducible and uses the exact submodule versions referenced by
+# the repository. For local, unpushed changes, see the alternative COPY line
+# below. The .dockerignore at the context root keeps local artifacts out.
 
 FROM ubuntu:22.04
 
@@ -63,8 +65,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && echo ${TZ} > /etc/timezone \
     && rm -rf /var/lib/apt/lists/*
 
-# Build context is the repository root; copy the source without .git/build.
-COPY . /src
+# Clone the exact source tree (including the pinned submodules). This avoids
+# stale local submodule checkouts breaking the build from a clean context.
+RUN git clone --depth 1 --recursive --shallow-submodules \
+        -b avr32-nanomind \
+        https://github.com/mpojma/qemu-avr32.git /src
+
+# ALTERNATIVE for development with unpushed local commits: comment the RUN
+# above and uncomment the COPY below, then build with this directory as context.
+# The local checkout must have its submodules initialised (git submodule update
+# --init --recursive) and must NOT have a stale build/ directory.
+# COPY . /src
 
 WORKDIR /src/build
 RUN ../configure --target-list=avr32-softmmu --disable-docs --disable-werror \
