@@ -296,9 +296,25 @@ static void fm33256b_realize(SSIPeripheral *ss, Error **errp)
                                          FM33256B_MAX_DATA, errp)) {
             return;
         }
+        /* Log (leveled) that the backing file was loaded, with a small
+         * fingerprint so we can confirm the guest sees these bytes. */
+        {
+            uint32_t sum = 0;
+            for (int i = 0; i < FM33256B_MAX_DATA; i++) {
+                sum += s->storage[i];
+            }
+            AVR32_LOG_DEV("[fm33256b] loaded %d bytes from drive; "
+                          "first8=%02x%02x%02x%02x%02x%02x%02x%02x sum=0x%08x\n",
+                          FM33256B_MAX_DATA,
+                          s->storage[0], s->storage[1], s->storage[2], s->storage[3],
+                          s->storage[4], s->storage[5], s->storage[6], s->storage[7],
+                          sum);
+        }
     } else {
         s->storage = blk_blockalign(NULL, FM33256B_MAX_DATA);
         memset(s->storage, 0, FM33256B_MAX_DATA);
+        AVR32_LOG_DEV("[fm33256b] no drive: %d bytes zero-filled\n",
+                      FM33256B_MAX_DATA);
     }
 }
 
