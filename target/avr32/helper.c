@@ -25,6 +25,7 @@
 #include "hw/avr32/boot.h"
 #include "qemu/qemu-print.h"
 #include "qemu/timer.h"
+#include "hw/avr32/avr32_log.h"
 
 /* Core COUNT runs at the CPU clock; NanoMind A3200 firmware uses 32 MHz. */
 #define AVR32_COUNT_HZ 32000000ULL
@@ -126,11 +127,16 @@ void avr32_cpu_do_interrupt(CPUState *cs)
         env->sflags[sflagGM] = 1;
         env->sflags[sflagEM] = 1;
 
-        printf("[avr32_cpu_do_interrupt] NOT FULLY IMPLEMENTED AVR32_EXCP_EXCP\n");
+        AVR32_LOG_CPU("[avr32_cpu_do_interrupt] NOT FULLY IMPLEMENTED AVR32_EXCP_EXCP\n");
 
     } else {
-        printf("[avr32_cpu_do_interrupt] UNKNOWN exception_index=%d\n", cs->exception_index);
-        exit(-1);
+        /* A guest-triggered exception we do not model (e.g. the illegal
+         * instruction raised with index 23) must never terminate the host.
+         * Log it and reset the exception so the CPU can continue. */
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "[avr32_cpu_do_interrupt] UNKNOWN exception_index=%d "
+                      "(ignoring)\n", cs->exception_index);
+        cs->exception_index = -1;
     }
 }
 

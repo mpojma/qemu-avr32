@@ -23,6 +23,7 @@
 #include "migration/vmstate.h"
 #include "qemu/module.h"
 #include "qom/object.h"
+#include "hw/avr32/avr32_log.h"
 
 #define REG_SELF_TEST_X 13
 #define REG_SELF_TEST_Y 14
@@ -70,18 +71,18 @@ static uint8_t mpu3300_rx(I2CSlave *i2c)
     uint8_t rx;
 
     if(!s->current_reg_idx) {
-        printf("[mpu3300_rx] Reading without setting current registers index\n");
+        AVR32_LOG_DEV("[mpu3300_rx] Reading without setting current registers index\n");
         return 0xff; // No idea if this is the actual response
     } else if (s->current_reg_idx >= REG_COUNT) {
-        printf("[mpu3300_rx] Reading register out of bounds 0x%x > 0x%x\n", s->current_reg_idx, REG_COUNT);
+        AVR32_LOG_DEV("[mpu3300_rx] Reading register out of bounds 0x%x > 0x%x\n", s->current_reg_idx, REG_COUNT);
         return 0xff; // No idea if this is the actual response
     } else {
         rx = s->regs[s->current_reg_idx];
 
         if(s->current_reg_idx == REG_GYRO_TEMP_H) {
-            printf("[mpu3300_rx] Reading Temperature\n");
+            AVR32_LOG_DEV("[mpu3300_rx] Reading Temperature\n");
         } else if (s->current_reg_idx  == REG_GYRO_XOUT_H) {
-            printf("[mpu3300_rx] Reading Gyro\n");
+            AVR32_LOG_DEV("[mpu3300_rx] Reading Gyro\n");
         }
         ++s->current_reg_idx;
         return rx;
@@ -95,7 +96,7 @@ static int mpu3300_tx(I2CSlave *i2c, uint8_t data)
     if(!s->current_reg_idx) {
         s->current_reg_idx = data;
     } else if(s->current_reg_idx >= REG_COUNT) {
-        printf("[mpu3300_tx] Writing register out of bounds 0x%x > 0x%x\n", s->current_reg_idx, REG_COUNT);
+        AVR32_LOG_DEV("[mpu3300_tx] Writing register out of bounds 0x%x > 0x%x\n", s->current_reg_idx, REG_COUNT);
         return 1;
     } else {
         s->regs[s->current_reg_idx] = data;

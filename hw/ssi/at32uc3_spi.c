@@ -3,6 +3,7 @@
 #include "hw/ssi/at32uc3_spi.h"
 #include "migration/vmstate.h"
 #include "hw/qdev-properties.h"
+#include "hw/avr32/avr32_log.h"
 
 // AT32UC SPI Reference: http://ww1.microchip.com/downloads/en/DeviceDoc/doc32117.pdf 26.8 (pg. 670f.)
 #define AT32UC_SPI_CR   0x00
@@ -87,7 +88,7 @@ static uint64_t at32uc_spi_read(void *opaque, hwaddr addr, unsigned int size)
 
     switch(addr) {
         case AT32UC_SPI_CR:
-            printf("[at32uc_spi_read] AT32UC_SPI_CR is write-only\n");
+            AVR32_LOG_DEV("[at32uc_spi_read] AT32UC_SPI_CR is write-only\n");
             return 0xdead;
         case AT32UC_SPI_MR:
 //            printf("[at32uc_spi_read] AT32UC_SPI_MR, val: 0x%x\n", s->spi_mr);
@@ -100,7 +101,7 @@ static uint64_t at32uc_spi_read(void *opaque, hwaddr addr, unsigned int size)
 //            printf("[at32uc_spi_read] AT32UC_SPI_RDR, val: 0x%x\n", rdr);
             return rdr;
         case AT32UC_SPI_TDR:
-            printf("[at32uc_spi_read] AT32UC_SPI_TDR is write-only\n");
+            AVR32_LOG_DEV("[at32uc_spi_read] AT32UC_SPI_TDR is write-only\n");
             return 0xdead;
         case AT32UC_SPI_SR:
 //            printf("[at32uc_spi_read] AT32UC_SPI_SR, val: 0x%x\n", s->spi_sr);
@@ -115,7 +116,7 @@ static uint64_t at32uc_spi_read(void *opaque, hwaddr addr, unsigned int size)
         case AT32UC_SPI_CSR3:
             return s->spi_csr3;
         default:
-            printf("[at32uc_spi_read] unknown, addr: 0x%lx\n", addr << 2);
+            AVR32_LOG_DEV("[at32uc_spi_read] unknown, addr: 0x%lx\n", addr << 2);
             return 0;
     }
 }
@@ -130,17 +131,17 @@ static void at32uc_spi_write(void *opaque, hwaddr addr, uint64_t val64, unsigned
             if(val64 & CR_SPIEN) { // SPIEN: SPI Enable
                 // Writing a one to this bit will enable the SPI to transfer and receive data.
 
-                printf("[at32uc_spi_write] AT32UC_SPI_CR: CR_SPIEN\n");
+                AVR32_LOG_DEV("[at32uc_spi_write] AT32UC_SPI_CR: CR_SPIEN\n");
                 s->spi_cr |= CR_SPIEN;
                 // TDRE equals zero when the SPI is disabled or at reset. The SPI enable command sets this bit to one.
                 s->spi_sr |= (SR_SPIENS | SR_TDRE);
-                printf("[at32uc_spi_write] AT32UC_SPI_CR, s->spi_sr=0x%x\n", s->spi_sr);
+                AVR32_LOG_DEV("[at32uc_spi_write] AT32UC_SPI_CR, s->spi_sr=0x%x\n", s->spi_sr);
             } else {
                 // Writing a zero to this bit has no effect
             }
 
             if(val64 & CR_SWRST){
-                printf("[at32uc_spi_write] AT32UC_SPI_CR: CR_SWRST\n");
+                AVR32_LOG_DEV("[at32uc_spi_write] AT32UC_SPI_CR: CR_SWRST\n");
                 at32uc_spi_do_reset(s);
             }
             break;
@@ -159,12 +160,12 @@ static void at32uc_spi_write(void *opaque, hwaddr addr, uint64_t val64, unsigned
                 // PS: Peripheral Select
                 // 1: Variable Peripheral Select.
                 // 0: Fixed Peripheral Select.
-                printf("[at32uc_spi_write] AT32UC_SPI_MR 0x%x MR_PS, Peripheral Select\n", MR_PS);
+                AVR32_LOG_DEV("[at32uc_spi_write] AT32UC_SPI_MR 0x%x MR_PS, Peripheral Select\n", MR_PS);
                 val &= ~MR_PS;
             }
 
             if(val64 & MR_PCSDEC) {
-                printf("[at32uc_spi_write] AT32UC_SPI_MR 0x%x MR_PCSDEC, Chip Select Decode, NOT IMPLEMENTED\n", MR_PCSDEC);
+                AVR32_LOG_DEV("[at32uc_spi_write] AT32UC_SPI_MR 0x%x MR_PCSDEC, Chip Select Decode, NOT IMPLEMENTED\n", MR_PCSDEC);
                 val &= ~MR_PCSDEC;
             }
 
@@ -176,7 +177,7 @@ static void at32uc_spi_write(void *opaque, hwaddr addr, uint64_t val64, unsigned
 
             if(val64 & MR_RXFIFOEN) {
                 // RXFIFOEN: FIFO in Reception Enable
-                printf("[at32uc_spi_write] AT32UC_SPI_MR 0x%x MR_RXFIFOEN, FIFO in Reception Enable\n", MR_RXFIFOEN);
+                AVR32_LOG_DEV("[at32uc_spi_write] AT32UC_SPI_MR 0x%x MR_RXFIFOEN, FIFO in Reception Enable\n", MR_RXFIFOEN);
                 val &= ~MR_RXFIFOEN;
 //                s->spi_mr |= MR_RXFIFOEN;
             }
@@ -188,20 +189,21 @@ static void at32uc_spi_write(void *opaque, hwaddr addr, uint64_t val64, unsigned
             }
 
             if(val) {
-                printf("[at32uc_spi_write] AT32UC_SPI_MR 0x%lx\n", val64);
+                AVR32_LOG_DEV("[at32uc_spi_write] AT32UC_SPI_MR 0x%lx\n", val64);
             }
             break;
         case AT32UC_SPI_RDR: // Receive Data Register
-            printf("[at32uc_spi_write] AT32UC_SPI_RDR is read-only\n");
+            AVR32_LOG_DEV("[at32uc_spi_write] AT32UC_SPI_RDR is read-only\n");
             break;
         case AT32UC_SPI_TDR: // Transmit Data Register
+            /* PCS/LASTXFER handling is not modelled, but the data still has
+             * to be shifted out: dropping the transfer breaks FRAM/flash
+             * chip-select handling. Log the limitation and fall through. */
             if(val64 & TDR_PCS) {
-                printf("[at32uc_spi_write] AT32UC_SPI_TDR, TDR Peripheral Chip Select not implemented\n");
-                break;
+                AVR32_LOG_DEV("[at32uc_spi_write] AT32UC_SPI_TDR, TDR Peripheral Chip Select not implemented\n");
             }
             if(val64 & TDR_LASTXFER) {
-                printf("[at32uc_spi_write] AT32UC_SPI_TDR, LASTXFER not implemented\n");
-                break;
+                AVR32_LOG_DEV("[at32uc_spi_write] AT32UC_SPI_TDR, LASTXFER not implemented\n");
             }
 
             // If new data is written to TDR during the transfer, it stays in it until the current transfer is com-
@@ -221,23 +223,23 @@ static void at32uc_spi_write(void *opaque, hwaddr addr, uint64_t val64, unsigned
             at32uc_spi_transfer(s);
             break;
         case AT32UC_SPI_CSR0:
-            printf("[at32uc_spi_write] AT32UC_SPI_CSR0, val: 0x%lx\n", val64);
+            AVR32_LOG_DEV("[at32uc_spi_write] AT32UC_SPI_CSR0, val: 0x%lx\n", val64);
             s->spi_csr0 = val64;
             break;
         case AT32UC_SPI_CSR1:
-            printf("[at32uc_spi_write] AT32UC_SPI_CSR1, val: 0x%lx\n", val64);
+            AVR32_LOG_DEV("[at32uc_spi_write] AT32UC_SPI_CSR1, val: 0x%lx\n", val64);
             s->spi_csr1 = val64;
             break;
         case AT32UC_SPI_CSR2:
-            printf("[at32uc_spi_write] AT32UC_SPI_CSR2, val: 0x%lx\n", val64);
+            AVR32_LOG_DEV("[at32uc_spi_write] AT32UC_SPI_CSR2, val: 0x%lx\n", val64);
             s->spi_csr2 = val64;
             break;
         case AT32UC_SPI_CSR3:
-            printf("[at32uc_spi_write] AT32UC_SPI_CSR3, val: 0x%lx\n", val64);
+            AVR32_LOG_DEV("[at32uc_spi_write] AT32UC_SPI_CSR3, val: 0x%lx\n", val64);
             s->spi_csr3 = val64;
             break;
         default:
-            printf("[at32uc_spi_write] unknown, addr: 0x0x%lx, val: 0x%lx\n", addr << 2, val64);
+            AVR32_LOG_DEV("[at32uc_spi_write] unknown, addr: 0x0x%lx, val: 0x%lx\n", addr << 2, val64);
             break;
     }
 }

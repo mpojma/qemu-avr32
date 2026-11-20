@@ -23,6 +23,7 @@
 #include "migration/vmstate.h"
 #include "qemu/module.h"
 #include "qom/object.h"
+#include "hw/avr32/avr32_log.h"
 
 
 struct NanoPowerP31uState {
@@ -48,13 +49,13 @@ static void nanopower_p31_reset(DeviceState *dev)
 
 static uint8_t nanopower_p31_rx(I2CSlave *i2c)
 {
-    printf("[nanopower_p31_rx] ret=0x%x\n", 0xff);
+    AVR32_LOG_DEV("[nanopower_p31_rx] ret=0x%x\n", 0xff);
     return 0xff;
 }
 
 static int nanopower_p31_tx(I2CSlave *i2c, uint8_t data)
 {
-    printf("[nanopower_p31_tx] data=0x%x\n", data);
+    AVR32_LOG_DEV("[nanopower_p31_tx] data=0x%x\n", data);
 
     return 0;
 }

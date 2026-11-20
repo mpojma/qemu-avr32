@@ -22,6 +22,7 @@
 #include "hw/ssi/ssi.h"
 #include "qemu/module.h"
 #include "qom/object.h"
+#include "hw/avr32/avr32_log.h"
 
 #define FM33256B_WREN 0x06  // 0000 0110b
 #define FM33256B_WRDI 0x04  // 0000 0100b
@@ -136,12 +137,12 @@ static uint32_t fm33256b_transfer8(SSIPeripheral *ss, uint32_t tx)
             switch(s->cmd) {
                 case FM33256B_WREN: {
                     s->status |= FM33256B_STATUS_WEL;
-                    s->status = STATE_IDLE;
+                    s->state = STATE_IDLE;
                     break;
                 }
                 case FM33256B_WRDI: {
                     s->status &= ~FM33256B_STATUS_WEL;
-                    s->status = STATE_IDLE;
+                    s->state = STATE_IDLE;
                     break;
                 }
                 case FM33256B_RDSR: {
@@ -149,25 +150,26 @@ static uint32_t fm33256b_transfer8(SSIPeripheral *ss, uint32_t tx)
                     break;
                 }
                 case FM33256B_WRSR: {
-                    if(s->state & FM33256B_STATUS_WEL) {
+                    if(s->status & FM33256B_STATUS_WEL) {
                         if(tx & FM33256B_STATUS_BP0) {
-                            s->state |= FM33256B_STATUS_BP0;
+                            s->status |= FM33256B_STATUS_BP0;
                         } else {
-                            s->state &= ~FM33256B_STATUS_BP0;
+                            s->status &= ~FM33256B_STATUS_BP0;
                         }
 
                         if(tx & FM33256B_STATUS_BP1) {
-                            s->state |= FM33256B_STATUS_BP1;
+                            s->status |= FM33256B_STATUS_BP1;
                         } else {
-                            s->state &= ~FM33256B_STATUS_BP1;
+                            s->status &= ~FM33256B_STATUS_BP1;
                         }
 
-                        s->state &= ~FM33256B_STATUS_WEL;
+                        s->status &= ~FM33256B_STATUS_WEL;
                     }
+                    s->state = STATE_IDLE;
                     break;
                 }
                 case FM33256B_WRITE: {
-                    if(s->state & FM33256B_STATUS_WEL) {
+                    if(s->status & FM33256B_STATUS_WEL) {
                         s->data[s->addr] = tx & 0xff;
                         fm33256b_update_addr(s);
                     }
@@ -175,7 +177,7 @@ static uint32_t fm33256b_transfer8(SSIPeripheral *ss, uint32_t tx)
                 }
                 case FM33256B_READ: {
                     ret = s->data[s->addr];
-                    printf("[fm33256b_transfer8] FM33256B_READ data[0x%x]=0x%x\n", s->addr, ret);
+                    AVR32_LOG_DEV("[fm33256b_transfer8] FM33256B_READ data[0x%x]=0x%x\n", s->addr, ret);
 
                     fm33256b_update_addr(s);
                     break;
@@ -186,15 +188,15 @@ static uint32_t fm33256b_transfer8(SSIPeripheral *ss, uint32_t tx)
                     break;
                 }
                 case FM33256B_WRPC: {
-                    if(s->state & FM33256B_STATUS_WEL) {
+                    if(s->status & FM33256B_STATUS_WEL) {
                         s->regs[s->reg_idx] = tx & 0xff;
                         fm33256b_update_reg_idx(s);
                     }
                     break;
                 }
                 default: {
-                    printf("[fm33256b_transfer8] Executing unknown/unimplemented cmd=0x%x\n", s->cmd);
-                    exit(-1);
+                    qemu_log_mask(LOG_GUEST_ERROR, "[fm33256b_transfer8] Executing unknown/unimplemented cmd=0x%x\n", s->cmd);
+                    ret = 0;
                 }
             }
             break;
@@ -206,7 +208,8 @@ static uint32_t fm33256b_transfer8(SSIPeripheral *ss, uint32_t tx)
             switch(s->cmd) {
                 case FM33256B_WREN:
                 case FM33256B_WRDI:
-                case FM33256B_RDSR: {
+                case FM33256B_RDSR:
+                case FM33256B_WRSR: {
                     s->state = STATE_RUN_CMD;
                     break;
                 }
@@ -221,8 +224,8 @@ static uint32_t fm33256b_transfer8(SSIPeripheral *ss, uint32_t tx)
                     break;
                 }
                 default: {
-                    printf("[fm33256b_transfer8] Executing unknown/unimplemented cmd=0x%x\n", s->cmd);
-                    exit(-1);
+                    qemu_log_mask(LOG_GUEST_ERROR, "[fm33256b_transfer8] Executing unknown/unimplemented cmd=0x%x\n", s->cmd);
+                    ret = 0;
                 }
             }
             break;
@@ -234,7 +237,7 @@ static uint32_t fm33256b_transfer8(SSIPeripheral *ss, uint32_t tx)
 
 static int fm33256b_cs(SSIPeripheral *ss, bool select)
 {
-    printf("[fm33256b_cs] select=%d\n", select);
+    AVR32_LOG_DEV("[fm33256b_cs] select=%d\n", select);
     FM33256BState* s = FM33256B(ss);
 
     if(select) {

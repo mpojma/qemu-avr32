@@ -28,6 +28,7 @@
 #include "hw/loader.h"
 #include "hw/qdev-properties.h"
 #include "at32uc3_twim.h"
+#include "hw/avr32/avr32_log.h"
 struct NanomindA3200MachineState {
     /*< private >*/
     MachineState parent_obj;
@@ -70,7 +71,7 @@ static void nanomind_3200_init(MachineState *machine)
 
     NanomindA3200MachineState* nmms = NANOMIND_A3200_MACHINE(machine);
 
-    printf("Setting up board...\n");
+    AVR32_LOG_DEV("Setting up board...\n");
 
     object_initialize_child(OBJECT(machine), "soc", &nmms->soc, TYPE_AT32UC3C0512C_SOC);
     sysbus_realize(SYS_BUS_DEVICE(&nmms->soc), &error_abort);
@@ -139,15 +140,17 @@ static void nanomind_3200_init(MachineState *machine)
     (void) dev;
 
     //BUS I2C with CSP implementation
-    dev = DEVICE(i2c_slave_create_simple(nmms->soc.twim[0].bus, "nanopower.p31u", 0x2));
+    /* NanoPower P31U (EPS) I2C address is 0x20 per the firmware's
+     * p31u_client/eps_board.h (EPS_BOARD_I2C_ADDR), not 0x2. */
+    dev = DEVICE(i2c_slave_create_simple(nmms->soc.twim[0].bus, "nanopower.p31u", 0x20));
     (void) dev;
 
-    printf("Board setup complete\n");
-    printf("Loading firmware '%s'...\n", machine->firmware);
+    AVR32_LOG_DEV("Board setup complete\n");
+    AVR32_LOG_DEV("Loading firmware '%s'...\n", machine->firmware);
 
     if (machine->firmware) {
         if (!avr32_load_firmware(&nmms->soc.cpu.cpu, machine,
-                                 &nmms->soc.sdram, machine->firmware)) {
+                                 &nmms->soc.onChipFlash, machine->firmware)) {
             exit(1);
         }
     }

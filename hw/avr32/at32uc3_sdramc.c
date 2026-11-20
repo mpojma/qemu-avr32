@@ -20,6 +20,7 @@
 #include "qemu/osdep.h"
 #include "qemu/module.h"
 #include "hw/avr32/at32uc3_sdramc.h"
+#include "hw/avr32/avr32_log.h"
 
 #define MR_REG 0x0
 #define RTR_REG 0x4
@@ -40,16 +41,16 @@ static uint64_t at32uc_sdramc_read(void *opaque, hwaddr offset, unsigned int siz
 {
     switch (offset) {
         case MR_REG:
-            printf("[SDRAMC] Read MR: 0x%x\n", mr_reg);
+            AVR32_LOG_DEV("[SDRAMC] Read MR: 0x%x\n", mr_reg);
             return mr_reg;
         case RTR_REG:
-            printf("[SDRAMC] Read RTR: 0x%x\n", rtr_reg);
+            AVR32_LOG_DEV("[SDRAMC] Read RTR: 0x%x\n", rtr_reg);
             return rtr_reg;
         case CR_REG:
-            printf("[SDRAMC] Read CR: 0x%x\n", cr_reg);
+            AVR32_LOG_DEV("[SDRAMC] Read CR: 0x%x\n", cr_reg);
             return cr_reg;
         default:
-            printf("[SDRAMC] Read on 0x%x\n", (uint32_t) offset);
+            AVR32_LOG_DEV("[SDRAMC] Read on 0x%x\n", (uint32_t) offset);
             return 0;
     }
 }
@@ -58,19 +59,19 @@ static void at32uc_sdramc_write(void *opaque, hwaddr offset, uint64_t val64, uns
 {
     switch (offset) {
         case MR_REG:
-            printf("[SDRAMC] Write MR: 0x%x\n", (uint32_t)val64);
+            AVR32_LOG_DEV("[SDRAMC] Write MR: 0x%x\n", (uint32_t)val64);
             mr_reg = (uint32_t)val64;
             break;
         case RTR_REG:
-            printf("[SDRAMC] Write RTR: 0x%x\n", (uint32_t)val64);
+            AVR32_LOG_DEV("[SDRAMC] Write RTR: 0x%x\n", (uint32_t)val64);
             rtr_reg = (uint32_t)val64;
             break;
         case CR_REG:
-            printf("[SDRAMC] Write CR: 0x%x\n", (uint32_t)val64);
+            AVR32_LOG_DEV("[SDRAMC] Write CR: 0x%x\n", (uint32_t)val64);
             cr_reg = (uint32_t)val64;
             break;
         default:
-            printf("[SDRAMC] Write '0x%x' on 0x%x\n", (uint32_t)val64, (uint32_t)offset);
+            AVR32_LOG_DEV("[SDRAMC] Write '0x%x' on 0x%x\n", (uint32_t)val64, (uint32_t)offset);
     }
 
 }

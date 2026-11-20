@@ -22,6 +22,7 @@
 #include "migration/vmstate.h"
 #include "qemu/module.h"
 #include "qom/object.h"
+#include "hw/avr32/avr32_log.h"
 
 #define REG_CONFIG_A 0
 #define REG_CONFIG_B 1
@@ -81,7 +82,7 @@ static uint8_t hmc5843_rx(I2CSlave *i2c)
     if(current_reg == REG_CONFIG_A) {
     } else if(current_reg == REG_IDENT_A) {
     } else if(current_reg == REG_DATA_OUT_X_MSB) {
-        printf("[hmc5843_rx] Reading Compass\n");
+        AVR32_LOG_DEV("[hmc5843_rx] Reading Compass\n");
     }
 
     switch(current_reg) {
@@ -99,7 +100,7 @@ static uint8_t hmc5843_rx(I2CSlave *i2c)
         case REG_IDENT_B: return '4';
         case REG_IDENT_C: return '3';
         default: {
-            printf("[hmc5843_tx] Attempting to read write-only or out-of-bounds reg[%d]\n", s->current_reg_idx);
+            AVR32_LOG_DEV("[hmc5843_tx] Attempting to read write-only or out-of-bounds reg[%d]\n", s->current_reg_idx);
         }
     }
 
@@ -117,12 +118,12 @@ static int hmc5843_tx(I2CSlave *i2c, uint8_t data)
 
     switch(s->current_reg_idx) {
         case REG_CONFIG_A: {
-            printf("[hmc5843_tx] CONF_A=0x%x\n", data);
+            AVR32_LOG_DEV("[hmc5843_tx] CONF_A=0x%x\n", data);
               s->conf_a = data;
             break;
         }
         case REG_CONFIG_B: {
-            printf("[hmc5843_tx] CONF_B=0x%x\n", data);
+            AVR32_LOG_DEV("[hmc5843_tx] CONF_B=0x%x\n", data);
             s->conf_b = data;
             break;
         }
@@ -132,7 +133,7 @@ static int hmc5843_tx(I2CSlave *i2c, uint8_t data)
             break;
         }
         default: {
-            printf("[hmc5843_tx] Attempting to write read-only or out-of-bounds reg[%d]=0x%x\n", s->current_reg_idx, data);
+            AVR32_LOG_DEV("[hmc5843_tx] Attempting to write read-only or out-of-bounds reg[%d]=0x%x\n", s->current_reg_idx, data);
             return 1;
         }
     }
@@ -178,7 +179,7 @@ static void hmc5843_reset(DeviceState *dev)
 
 static void hmc5843_inst_init(Object *obj)
 {
-    printf("[hmc5843_inst_init]\n");
+    AVR32_LOG_DEV("[hmc5843_inst_init]\n");
 }
 
 static void hmc5843_class_init(ObjectClass *klass, void *data)

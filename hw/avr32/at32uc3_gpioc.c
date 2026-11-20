@@ -20,6 +20,7 @@
 #include "qemu/osdep.h"
 #include "qemu/module.h"
 #include "hw/avr32/at32uc3_gpioc.h"
+#include "hw/avr32/avr32_log.h"
 
 #define GPIOC_READ_WRITE 0x0
 #define GPIOC_SET 0x4
@@ -110,7 +111,7 @@ static uint64_t at32uc_gpioc_read(void *opaque, hwaddr offset, unsigned int size
     int operation = addr & 0x00F;
 
     if(operation != GPIOC_READ_WRITE){
-        printf("[GPIOC_read] Non-read operation on read-only register 0x%x!\n", reg);
+        AVR32_LOG_DEV("[GPIOC_read] Non-read operation on read-only register 0x%x!\n", reg);
         return 0xff;
     }
 
@@ -144,67 +145,67 @@ static void at32uc_gpioc_write(void *opaque, hwaddr offset, uint64_t val64, unsi
     int operation = addr & 0x00F;
 
     if(reg == PARAM_VER_REG){
-        printf("[GPIOC_write] Write to read-only Parameter/Version register!\n");
+        AVR32_LOG_DEV("[GPIOC_write] Write to read-only Parameter/Version register!\n");
         return;
     }
 
-    printf("[GPIOC_write] Port: %i, ", port);
+    AVR32_LOG_DEV("[GPIOC_write] Port: %i, ", port);
     switch(reg) {
         case GPIO_ENABLE_REG: {
-            printf("GPIO_ENABLE_REG ");
+            AVR32_LOG_DEV("GPIO_ENABLE_REG ");
             break;
         }
         case P_MUX0_REG: {
-            printf("P_MUX0_REG ");
+            AVR32_LOG_DEV("P_MUX0_REG ");
             break;
         }
         case P_MUX1_REG: {
-            printf("P_MUX1_REG ");
+            AVR32_LOG_DEV("P_MUX1_REG ");
             break;
         }
         case P_MUX2_REG: {
-            printf("P_MUX2_REG ");
+            AVR32_LOG_DEV("P_MUX2_REG ");
             break;
         }
         case OUTPUT_DRIVER_ENABLE_REG: {
-            printf("OUTPUT_DRIVER_ENABLE_REG ");
+            AVR32_LOG_DEV("OUTPUT_DRIVER_ENABLE_REG ");
             break;
         }
         case OUTPUT_VALUE_REG: {
-            printf("OUTPUT_VALUE_REG ");
+            AVR32_LOG_DEV("OUTPUT_VALUE_REG ");
             break;
         }
         case PULL_UP_ENABLE_REG: {
-            printf("PULL_UP_ENABLE_REG ");
+            AVR32_LOG_DEV("PULL_UP_ENABLE_REG ");
             break;
         }
         case PULL_DOWN_ENABLE_REG: {
-            printf("PULL_DOWN_ENABLE_REG ");
+            AVR32_LOG_DEV("PULL_DOWN_ENABLE_REG ");
             break;
         }
         case OUTPUT_DRV_CAP0_REG: {
-            printf("OUTPUT_DRV_CAP0_REG ");
+            AVR32_LOG_DEV("OUTPUT_DRV_CAP0_REG ");
             break;
         }
         default: {
-            printf("NA (0x%x) op: ", reg);
+            AVR32_LOG_DEV("NA (0x%x) op: ", reg);
             break;
         }
     }
     switch(operation) {
         case GPIOC_READ_WRITE: {
-            printf("WRITE: 0x%x\n", (uint32_t)val64);
+            AVR32_LOG_DEV("WRITE: 0x%x\n", (uint32_t)val64);
             s->ports[port].registers[reg] = (uint32_t)val64;
             break;
         }
         case GPIOC_SET: {
-            printf("SET: 0x%x\n", (uint32_t)val64);
+            AVR32_LOG_DEV("SET: 0x%x\n", (uint32_t)val64);
             s->ports[port].registers[reg] |= (uint32_t)val64;
             break;
         }
         case GPIOC_CLEAR: {
             s->ports[port].registers[reg] &= ~(uint32_t)val64;
-            printf("CLEAR: 0x%x, new val: 0x%04x\n", (uint32_t)val64, s->ports[port].registers[reg]);
+            AVR32_LOG_DEV("CLEAR: 0x%x, new val: 0x%04x\n", (uint32_t)val64, s->ports[port].registers[reg]);
             break;
         }
         case GPIOC_TOGGLE: {
@@ -214,7 +215,7 @@ static void at32uc_gpioc_write(void *opaque, hwaddr offset, uint64_t val64, unsi
                     s->ports[port].registers[reg] ^= ((uint32_t)1 << i);
                 }
             }
-            printf("TOGGLE: 0x%x, new val: 0x04%x\n", (uint32_t)val64, s->ports[port].registers[reg]);
+            AVR32_LOG_DEV("TOGGLE: 0x%x, new val: 0x04%x\n", (uint32_t)val64, s->ports[port].registers[reg]);
             break;
         }
     }

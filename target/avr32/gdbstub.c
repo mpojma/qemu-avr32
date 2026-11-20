@@ -20,6 +20,7 @@
 
 #include "qemu/osdep.h"
 #include "gdbstub/helpers.h"
+#include "hw/avr32/avr32_log.h"
 
 int avr32_cpu_gdb_read_register(CPUState *cs, GByteArray *mem_buf, int n)
 {
@@ -32,7 +33,7 @@ int avr32_cpu_gdb_read_register(CPUState *cs, GByteArray *mem_buf, int n)
     val |= ((env->r[n] & 0x00FF0000) >> 8);
     val |= ((env->r[n] & 0xFF000000) >> 24);
 
-    printf("Sending to GDB: 0x%04x", val);
+    AVR32_LOG_DEV("Sending to GDB: 0x%04x", val);
 
 
     return gdb_get_reg32(mem_buf, val);
@@ -43,7 +44,7 @@ int avr32_cpu_gdb_write_register(CPUState *cs, uint8_t *mem_buf, int n)
     AVR32ACPU *cpu = AVR32A_CPU(cs);
     CPUAVR32AState *env = &cpu->env;
 
-    printf("Writing GDB input to register %i", n);
+    AVR32_LOG_DEV("Writing GDB input to register %i", n);
 
     uint32_t val = 0;
     uint32_t memval = (uint32_t)ldl_p(mem_buf);

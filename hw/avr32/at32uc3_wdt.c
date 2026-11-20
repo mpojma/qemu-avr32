@@ -28,6 +28,7 @@
 #include "qemu/main-loop.h"
 #include "threads.h"
 #include "sysemu/watchdog.h"
+#include "hw/avr32/avr32_log.h"
 
 #define WDT_CTRL (0x000)
 #define WDT_CLR (0x004)
@@ -64,11 +65,11 @@ static uint64_t at32uc_wdt_read(void *opaque, hwaddr addr, unsigned int size)
     AT32UC3WDTState* s = AT32UC3_WDT(opaque);
     switch(addr) {
         case WDT_CTRL: {
-            printf("[at32uc_wdt_read] CTRL: 0x%04x\n", s->ctrl);
+            AVR32_LOG_DEV("[at32uc_wdt_read] CTRL: 0x%04x\n", s->ctrl);
             return s->ctrl;
         }
         case WDT_CLR: {
-            printf("[at32uc_wdt_read] CLR is write-only\n");
+            AVR32_LOG_DEV("[at32uc_wdt_read] CLR is write-only\n");
             return 0xdeadbeef;
         }
         case WDT_SR: {
@@ -79,8 +80,7 @@ static uint64_t at32uc_wdt_read(void *opaque, hwaddr addr, unsigned int size)
             return 0x00000410;
         }
         default: {
-            printf("[at32uc_wdt_read] addr=0x%lx is not implemented!\n", addr);
-            exit(-1);
+            qemu_log_mask(LOG_GUEST_ERROR, "[at32uc_wdt_read] addr=0x%lx is not implemented!\n", addr);
             return 0xdeadbeef;
         }
     }
@@ -99,9 +99,9 @@ static void at32uc_wdt_write(void *opaque, hwaddr offset, uint64_t val64, unsign
                 if ((val64 & WDT_CTRL_CONTENT) == (s->ctrl_last & WDT_CTRL_CONTENT)) {
                     uint32_t new_ctrl = val64 & WDT_CTRL_CONTENT;
                     s->ctrl = new_ctrl;
-                    printf("[at32uc_wdt_write] CTRL: 0x%08x\n", s->ctrl);
+                    AVR32_LOG_DEV("[at32uc_wdt_write] CTRL: 0x%08x\n", s->ctrl);
                 } else {
-                    printf("[at32uc_wdt_write] CTRL invalid!\n");
+                    AVR32_LOG_DEV("[at32uc_wdt_write] CTRL invalid!\n");
                 }
                 s->ctrl_last = 0;
                 return;
@@ -131,7 +131,7 @@ static void at32uc_wdt_write(void *opaque, hwaddr offset, uint64_t val64, unsign
         }
         case WDT_SR:
         {
-            printf("[at32uc_wdt_read] SR is read-only!\n");
+            AVR32_LOG_DEV("[at32uc_wdt_read] SR is read-only!\n");
             return;
         }
         case WDT_VERSION: {
@@ -157,7 +157,7 @@ static void at32uc3_wdt_expired(void *opaque)
 
     /* Perform watchdog action if watchdog is enabled and can trigger reset */
     if (enabled) {
-        printf("[at32uc_wdt] EXPIRED\n");
+        AVR32_LOG_DEV("[at32uc_wdt] EXPIRED\n");
         watchdog_perform_action();
     }
 }

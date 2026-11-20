@@ -24,6 +24,7 @@
 #include "exec/address-spaces.h"
 
 #include "at32uc3_twis.h"
+#include "hw/avr32/avr32_log.h"
 
 #define PDCA_CHANNEL_REGION_SIZE 0x40
 
@@ -97,8 +98,8 @@ static bool pdca_channel_pid_is_recv(uint8_t pid)
             return false;
         }
         default: {
-            printf("[pdca_channel_pid_is_recv] unknown PDCA PID=%d", pid);
-            exit(-1);
+            qemu_log_mask(LOG_GUEST_ERROR, "[pdca_channel_pid_is_recv] unknown PDCA PID=%d, assuming transmit\n", pid);
+            return false;
         }
 
     }
@@ -141,7 +142,7 @@ static uint64_t at32uc_pdca_read(void *opaque, hwaddr addr, unsigned int size)
             }
             case PDCA_CHANNEL_CR:
             {
-                printf("[at32uc_pdca_read] PDCA_CHANNEL_CR is write-only\n");
+                AVR32_LOG_DEV("[at32uc_pdca_read] PDCA_CHANNEL_CR is write-only\n");
                 return 0xdeadbeef;
             }
             case PDCA_CHANNEL_MR:
@@ -155,7 +156,7 @@ static uint64_t at32uc_pdca_read(void *opaque, hwaddr addr, unsigned int size)
             case PDCA_CHANNEL_IER:
             case PDCA_CHANNEL_IDR:
             {
-                printf("[at32uc_pdca_read] PDCA_CHANNEL_IE/DR is write-only\n");
+                AVR32_LOG_DEV("[at32uc_pdca_read] PDCA_CHANNEL_IE/DR is write-only\n");
                 return 0xdeadbeef;
             }
             case PDCA_CHANNEL_IMR:
@@ -247,7 +248,7 @@ static void at32uc_pdca_write(void *opaque, hwaddr addr, uint64_t val64, unsigne
                 }
 
                 if((val64 & PDCA_CHANNEL_CR_TEN) && (val64 & PDCA_CHANNEL_CR_TDIS)) {
-                    printf("[at32uc_pdca_write] PDCA_CHANNEL_CR - Warning - Enabled and disabled DMA channel\n");
+                    AVR32_LOG_DEV("[at32uc_pdca_write] PDCA_CHANNEL_CR - Warning - Enabled and disabled DMA channel\n");
                 }
 
                 if(val64 & PDCA_CHANNEL_CR_ECLR) {
@@ -269,7 +270,7 @@ static void at32uc_pdca_write(void *opaque, hwaddr addr, uint64_t val64, unsigne
             }
             case PDCA_CHANNEL_SR:
             {
-                printf("[at32uc_pdca_write] PDCA_CHANNEL_SR is read-only\n");
+                AVR32_LOG_DEV("[at32uc_pdca_write] PDCA_CHANNEL_SR is read-only\n");
                 break;
             }
             case PDCA_CHANNEL_IER:
@@ -286,12 +287,12 @@ static void at32uc_pdca_write(void *opaque, hwaddr addr, uint64_t val64, unsigne
             }
             case PDCA_CHANNEL_IMR:
             {
-                printf("[at32uc_pdca_write] PDCA_CHANNEL_IMR is read-only\n");
+                AVR32_LOG_DEV("[at32uc_pdca_write] PDCA_CHANNEL_IMR is read-only\n");
                 break;
             }
             default:
             {
-                printf("[at32uc_pdca_write] channel_offset=0x%x is unknown\n", channel_offset);
+                AVR32_LOG_DEV("[at32uc_pdca_write] channel_offset=0x%x is unknown\n", channel_offset);
             }
         }
     } else {
@@ -402,14 +403,13 @@ static void pdca_handle_irq(void *opaque, int irq, int level)
             *ch->mar_buf = rhr;
             ++ch->mar_buf;
 
-            printf("[pdca_handle_irq] TWIS_RX mar=0x%x, rhr=0x%x\n", ch->mar, rhr);
+            AVR32_LOG_DEV("[pdca_handle_irq] TWIS_RX mar=0x%x, rhr=0x%x\n", ch->mar, rhr);
 
             pdca_update_tcv(s, ch);
             break;
         }
         default: {
-            printf("[pdca_handle_irq] PDCA hanlding for PID=%d is not implemented\n", irq);
-            exit(-1);
+            qemu_log_mask(LOG_GUEST_ERROR, "[pdca_handle_irq] PDCA handling for PID=%d is not implemented; ignoring\n", irq);
             break;
         }
     }

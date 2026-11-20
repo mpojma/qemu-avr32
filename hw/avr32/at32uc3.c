@@ -306,7 +306,9 @@ static void at32uc3c0512c_class_init(ObjectClass *oc, void *data)
 
     at32uc3->cpu_type = AVR32A_CPU_TYPE_NAME("AT32UC3C");
     at32uc3->flash_size = 512 * KiB;
-    at32uc3->sram_size = 68 * KiB;
+    /* Linker script avr32uc3c0512c.lds: CPUSRAM 64 KiB at 0x4 (64K-4 usable).
+     * The old 68 KiB value was larger than the documented SRAM. */
+    at32uc3->sram_size = 64 * KiB;
     at32uc3->max_sdram_size = 4096 * MiB;
     at32uc3->can_count = 2;
     at32uc3->usart_count = 4;
