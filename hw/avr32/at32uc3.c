@@ -31,6 +31,7 @@
 #include "hw/avr32/at32uc3_adcifa.h"
 #include "hw/avr32/at32uc3_uart.h"
 #include "hw/avr32/at32uc3_can.h"
+#include "hw/avr32/avr32_log.h"
 
 static const uint32_t spi_addr[AT32UC3C_MAX_SPIS] = { 0xFFFD1800, 0xFFFF3400 };
 static const int spi_irq[AT32UC3C_MAX_SPIS] = {3, 28};
@@ -101,6 +102,36 @@ typedef struct AT32UC3CSocClass AT32UC3CSocClass;
 DECLARE_CLASS_CHECKERS(AT32UC3CSocClass, AT32UC3C_SOC, TYPE_AT32UC3C_SOC)
 
 
+/* ---- Power Manager (PM) stub ------------------------------------------
+ * The firmware's sysclk_init() writes PM registers (UNLOCK key 0xAA......
+ * followed by MCCTRL/CPUSEL/PBASEL/...).  The SoC previously had no PM
+ * mapped at 0xFFFF0400 / 0x400, so all those writes were rejected and the
+ * clock init looped forever.  Reads return all-ones so any "clock ready"
+ * polling succeeds immediately.
+ */
+#define PM_UNLOCK_KEY 0xAA000000u
+
+static uint64_t at32uc_pm_read(void *opaque, hwaddr offset, unsigned int size)
+{
+    AVR32_LOG_DEV("[PM] Read  @ 0x%x\n", (uint32_t)offset);
+    return 0xFFFFFFFFu;
+}
+
+static void at32uc_pm_write(void *opaque, hwaddr offset, uint64_t val64,
+                            unsigned int size)
+{
+    AVR32_LOG_DEV("[PM] Write @ 0x%x val=0x%x\n", (uint32_t)offset,
+                  (uint32_t)val64);
+    /* Accept UNLOCK and register writes; nothing else to model. */
+}
+
+static const MemoryRegionOps pm_ops = {
+    .read = at32uc_pm_read,
+    .write = at32uc_pm_write,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid = { .min_access_size = 4, .max_access_size = 4 },
+};
+
 // This functions sets up the device
 static void at32uc3_realize(DeviceState *dev_soc, Error **errp)
 {
@@ -133,6 +164,18 @@ static void at32uc3_realize(DeviceState *dev_soc, Error **errp)
     /* SYS Stack */
     memory_region_init_ram(&s->sysstack, OBJECT(dev_soc), "sysstack", 0x40000, &error_abort);
     memory_region_add_subregion(get_system_memory(),  0x4FFC0000, &s->sysstack);
+
+    /* Power Manager stub (sysclk_init writes PM registers here). */
+    memory_region_init_io(&s->pm, OBJECT(dev_soc), &pm_ops, s, "pm", 0x100);
+    memory_region_add_subregion(get_system_memory(), 0xffff0400, &s->pm);
+
+    /* The firmware places its heap at 0xD0100000 (SDRAM + 1 MB) but the
+     * emulated CPU accesses it via a truncated 18-bit address (0x10000..).
+     * Alias that SDRAM window into low memory so those writes land in real
+     * RAM instead of being rejected as unmapped. */
+    memory_region_init_alias(&s->sdram_alias, OBJECT(dev_soc), "sdram-alias",
+                             &s->sdram, 0x0, 0x2000000);
+    memory_region_add_subregion(get_system_memory(), 0x10000, &s->sdram_alias);
 
     /* INTC (Interrupt Controller) */
     intc_dev = DEVICE(&(s->intc));

@@ -70,6 +70,8 @@ struct AT32UC3CSocState {
     MemoryRegion sdram;
     MemoryRegion sram;
     MemoryRegion sysstack;
+    MemoryRegion pm;
+    MemoryRegion sdram_alias;
 
     qemu_irq irq;
 
