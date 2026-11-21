@@ -1,0 +1,48 @@
+# DEPRECATED — all logging changes are now committed in the source tree and
+# Container/Dockerfile builds them directly. No incremental overlay needed.
+# Rebuild the leveled-logging changes on top of the original configured image.
+#   podman build -f Container/Dockerfile.logging -t qemu-avr32-local .
+FROM localhost/qemu-avr32:latest
+
+# AVR32 leveled logging: framework bits + category registration
+COPY qemu-avr32/include/qemu/log.h        /src/include/qemu/log.h
+COPY qemu-avr32/util/log.c                /src/util/log.c
+COPY qemu-avr32/include/hw/avr32/avr32_log.h /src/include/hw/avr32/avr32_log.h
+
+# target/avr32
+COPY qemu-avr32/target/avr32/cpu.c          /src/target/avr32/cpu.c
+COPY qemu-avr32/target/avr32/disas.c        /src/target/avr32/disas.c
+COPY qemu-avr32/target/avr32/gdbstub.c      /src/target/avr32/gdbstub.c
+COPY qemu-avr32/target/avr32/helper.c       /src/target/avr32/helper.c
+COPY qemu-avr32/target/avr32/helper.h       /src/target/avr32/helper.h
+COPY qemu-avr32/target/avr32/helper_conditions.c /src/target/avr32/helper_conditions.c
+COPY qemu-avr32/target/avr32/helper_elf.c   /src/target/avr32/helper_elf.c
+COPY qemu-avr32/target/avr32/translate.c    /src/target/avr32/translate.c
+
+# hw/avr32
+COPY qemu-avr32/hw/avr32/at32uc3.c          /src/hw/avr32/at32uc3.c
+COPY qemu-avr32/hw/avr32/at32uc3.h          /src/hw/avr32/at32uc3.h
+COPY qemu-avr32/hw/avr32/at32uc3_uart.c     /src/hw/avr32/at32uc3_uart.c
+COPY qemu-avr32/hw/avr32/at32uc3_uart.h     /src/hw/avr32/at32uc3_uart.h
+COPY qemu-avr32/hw/avr32/at32uc3_gpioc.c    /src/hw/avr32/at32uc3_gpioc.c
+COPY qemu-avr32/hw/avr32/at32uc3_intc.c     /src/hw/avr32/at32uc3_intc.c
+COPY qemu-avr32/hw/avr32/at32uc3_pdca.c     /src/hw/avr32/at32uc3_pdca.c
+COPY qemu-avr32/hw/avr32/at32uc3_sdramc.c   /src/hw/avr32/at32uc3_sdramc.c
+COPY qemu-avr32/hw/avr32/at32uc3_twim.c     /src/hw/avr32/at32uc3_twim.c
+COPY qemu-avr32/hw/avr32/at32uc3_twis.c     /src/hw/avr32/at32uc3_twis.c
+COPY qemu-avr32/hw/avr32/at32uc3_wdt.c      /src/hw/avr32/at32uc3_wdt.c
+COPY qemu-avr32/hw/avr32/boot.c             /src/hw/avr32/boot.c
+COPY qemu-avr32/hw/avr32/fm33256b.c         /src/hw/avr32/fm33256b.c
+COPY qemu-avr32/hw/avr32/hmc5843.c          /src/hw/avr32/hmc5843.c
+COPY qemu-avr32/hw/avr32/mpu3300.c          /src/hw/avr32/mpu3300.c
+COPY qemu-avr32/hw/avr32/nanomind_a3200.c   /src/hw/avr32/nanomind_a3200.c
+COPY qemu-avr32/hw/avr32/nanopower-p31u.c   /src/hw/avr32/nanopower-p31u.c
+COPY qemu-avr32/hw/avr32/rm3100.c           /src/hw/avr32/rm3100.c
+COPY qemu-avr32/hw/ssi/at32uc3_spi.c        /src/hw/ssi/at32uc3_spi.c
+COPY qemu-avr32/hw/timer/at32uc3_timer.c    /src/hw/timer/at32uc3_timer.c
+
+WORKDIR /src/build
+RUN make -j"$(nproc)" && make install
+
+WORKDIR /workspace
+ENTRYPOINT ["qemu-system-avr32"]

@@ -25,6 +25,7 @@
 #include "avr32uc.h"
 #include "hw/sysbus.h"
 #include "at32uc3.h"
+#include "hw/avr32/avr32_log.h"
 
 static const uint8_t IRQ_GRP_LINE[][2] = {
         [0] = {0xff, 0xff},
@@ -85,7 +86,7 @@ static uint64_t at32uc_intc_read(void *opaque, hwaddr addr, unsigned int size)
         int cause_reg_idx = 3 - ((addr - 0x200) >> 2);
         return s->cause[cause_reg_idx];
     } else {
-        printf("[at32uc_intc_read] Unknown reading unknown addr=0x%lx\n", addr);
+        AVR32_LOG_DEV("[at32uc_intc_read] Unknown reading unknown addr=0x%lx\n", addr);
         return 0xdeadbeef;
     }
 }
@@ -94,7 +95,7 @@ static void at32uc_intc_write(void *opaque, hwaddr addr, uint64_t val64, unsigne
     AT32UC3INTCState* s = AT32UC3_INTC(opaque);
 
     if(addr >= 0x100) {
-        printf("[at32uc_intc_write] interrupt request and cause register are read-only\n");
+        AVR32_LOG_DEV("[at32uc_intc_write] interrupt request and cause register are read-only\n");
     } else {
         s->priority_regs[addr >> 2] = val64;
     }
@@ -120,11 +121,11 @@ static int perform_intr_priorization(AT32UC3INTCState* s)
     // Request Masking
     s->val_req_lines = 0;
     for(int i = 0; i < 64; ++i) {
-        if(s->grp_req_lines & (1l << i)) {
+        if(s->grp_req_lines & (1ULL << i)) {
             intlevel = (s->priority_regs[i] & AT32UC3_INTC_IPR_INTLEVEL) >> 30;
 
             if(!cpu->env.sflags[17 + intlevel]) {
-                s->val_req_lines |= (1l << i);
+                s->val_req_lines |= (1ULL << i);
             }
         }
     }
@@ -136,7 +137,7 @@ static int perform_intr_priorization(AT32UC3INTCState* s)
     int highest_intlevel = -1;
 
     for(int i = 0; i < 64; ++i) {
-        if(s->val_req_lines & (1l << i)) {
+        if(s->val_req_lines & (1ULL << i)) {
             intlevel = (s->priority_regs[i] & AT32UC3_INTC_IPR_INTLEVEL) >> 30;
 
             if((intlevel_seen & (1 << intlevel)) == 0) {
@@ -164,14 +165,13 @@ static void avr32_set_irq(void *opaque, int irq, int level) {
 
    const uint8_t* grp_line = IRQ_GRP_LINE[irq];
     if(grp_line[0] == 0xff) {
-        printf("[avr32_set_irq] ~~~~~~~~~~ Unsupported IRQ=%d ~~~~~~~~~~~~~~~\n", irq);
-        exit(-1);
+        qemu_log_mask(LOG_GUEST_ERROR, "[avr32_set_irq] unmapped IRQ=%d, ignoring\n", irq);
         return;
     }
 
     if(level > 0) {
         s->request_regs[grp_line[0]] |= 1 << grp_line[1];
-        s->grp_req_lines |= 1l << grp_line[0];
+        s->grp_req_lines |= 1ULL << grp_line[0];
         cpu_interrupt(cs, CPU_INTERRUPT_HARD);
     } else {
         s->request_regs[grp_line[0]] &= ~(1 << grp_line[1]);

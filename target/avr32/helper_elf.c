@@ -23,6 +23,7 @@
 #include "elf.h"
 #include <string.h>
 #include "target/avr32/helper_elf.h"
+#include "hw/avr32/avr32_log.h"
 
 const char *AVR32_FIRMWARE_FILE;
 
@@ -77,7 +78,7 @@ void avr32_elf_read_sh_string_table(Elf32_Ehdr *header, FILE* file, Elf32_Shdr**
     res = fread(sh_strtable, size, 1, file);
 
     if(res <= 0){
-        printf("[AVR32-ELF] Read error!");
+        qemu_log_mask(LOG_GUEST_ERROR, "[AVR32-ELF] Read error!\n");
         exit(1);
     }
 }
@@ -98,7 +99,7 @@ void avr32_elf_read_string_table(Elf32_Ehdr *header, FILE* file, Elf32_Shdr** sh
     res = fread(strtable, size, 1, file);
 
     if(res <= 0){
-        printf("[AVR32-ELF] Read error!");
+        qemu_log_mask(LOG_GUEST_ERROR, "[AVR32-ELF] Read error!\n");
         exit(1);
     }
 }

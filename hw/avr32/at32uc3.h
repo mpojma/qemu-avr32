@@ -41,6 +41,7 @@
 
 #define AT32UC3C_MAX_SPIS 2
 #define AT32UC3C_MAX_TWI 3
+#define AT32UC3C_MAX_UART 2
 
 #define AT32UC3C_IRQ_TC02 10
 
@@ -69,6 +70,8 @@ struct AT32UC3CSocState {
     MemoryRegion sdram;
     MemoryRegion sram;
     MemoryRegion sysstack;
+    MemoryRegion pm;
+    MemoryRegion sdram_alias;
 
     qemu_irq irq;
 

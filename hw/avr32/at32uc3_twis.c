@@ -22,6 +22,7 @@
 #include "hw/avr32/at32uc3_twis.h"
 #include "migration/vmstate.h"
 #include "qom/object.h"
+#include "hw/avr32/avr32_log.h"
 #define AT32UC_TWIS_CR      0x00
 #define AT32UC_TWIS_NBYTES  0x04
 #define AT32UC_TWIS_TR      0x08
@@ -105,7 +106,7 @@ static void at32uc3_i2cslave_reset(DeviceState *dev)
 
 static uint8_t at32uc3_i2cslave_rx(I2CSlave *i2c)
 {
-    printf("[at32uc3_i2cslave_rx] ret=0x%x\n", 0xff);
+    AVR32_LOG_DEV("[at32uc3_i2cslave_rx] ret=0x%x\n", 0xff);
 
 
     return 0xff;
@@ -191,7 +192,7 @@ static void at32uc_twis_do_reset(AT32UC3TWISState* s)
 static uint64_t at32uc_twis_read(void *opaque, hwaddr addr, unsigned int size)
 {
     AT32UC3TWISState* s = opaque;
-    printf("[at32uc_twis_read] addr=0x%lx\n", addr);
+    AVR32_LOG_DEV("[at32uc_twis_read] addr=0x%lx\n", addr);
 
     switch (addr) {
         case AT32UC_TWIS_CR: {
@@ -206,13 +207,13 @@ static uint64_t at32uc_twis_read(void *opaque, hwaddr addr, unsigned int size)
         }
         case AT32UC_TWIS_SR:
         {
-            printf("[at32uc_twis_read] AT32UC_TWIS_SR = 0x%x\n", s->sr);
+            AVR32_LOG_DEV("[at32uc_twis_read] AT32UC_TWIS_SR = 0x%x\n", s->sr);
             return s->sr;
         }
         case AT32UC_TWIS_IER:
         case AT32UC_TWIS_IDR:
         {
-            printf("[at32uc_twis_read] AT32UC_TWIS_IE/DR, are write-only\n");
+            AVR32_LOG_DEV("[at32uc_twis_read] AT32UC_TWIS_IE/DR, are write-only\n");
             return 0xdead;
         }
         case AT32UC_TWIS_IMR:
@@ -221,14 +222,14 @@ static uint64_t at32uc_twis_read(void *opaque, hwaddr addr, unsigned int size)
         }
         case AT32UC_TWIS_SCR:
         {
-            printf("[at32uc_twis_read] AT32UC_TWIS_SCR, are write-only\n");
+            AVR32_LOG_DEV("[at32uc_twis_read] AT32UC_TWIS_SCR, are write-only\n");
             return 0xdead;
         }
         case AT32UC_TWIS_PR: return 0x00000000;
         case AT32UC_TWIS_VR: return 0x00000120;
         default: {
-            printf("[at32uc_twis_read] Reading unknown register=0x%lx\n", addr);
-            exit(-1);
+            qemu_log_mask(LOG_GUEST_ERROR, "[at32uc_twis_read] Reading unknown register=0x%lx\n", addr);
+            return 0xdead;
         }
     }
 }
@@ -237,7 +238,7 @@ static void at32uc_twis_write(void *opaque, hwaddr addr, uint64_t val64, unsigne
 {
     uint32_t mask;
     AT32UC3TWISState* s = opaque;
-    printf("[at32uc_twis_write] addr=0x%lx, val=0x%lx\n", addr, val64);
+    AVR32_LOG_DEV("[at32uc_twis_write] addr=0x%lx, val=0x%lx\n", addr, val64);
 
     switch(addr)
     {
@@ -251,12 +252,12 @@ static void at32uc_twis_write(void *opaque, hwaddr addr, uint64_t val64, unsigne
             }
 
             if(s->cr & TWIS_CR_TENBIT) {
-                printf("[at32uc_twis_write] 10-bit addresses are not supported\n");
-                exit(-1);
+                qemu_log_mask(LOG_GUEST_ERROR, "[at32uc_twis_write] 10-bit addresses are not supported; ignoring\n");
+                s->cr &= ~TWIS_CR_TENBIT;
             }
 
             if(s->cr & TWIS_CR_ADR_7) {
-                printf("[at32uc_twis_write] Setting slave address to 0x%x\n", (s->cr & TWIS_CR_ADR_7) >> 16);
+                AVR32_LOG_DEV("[at32uc_twis_write] Setting slave address to 0x%x\n", (s->cr & TWIS_CR_ADR_7) >> 16);
                 i2c_slave_set_address((I2CSlave*) s->i2c, (s->cr & TWIS_CR_ADR_7) >> 16);
             }
 
@@ -274,24 +275,23 @@ static void at32uc_twis_write(void *opaque, hwaddr addr, uint64_t val64, unsigne
         }
         case AT32UC_TWIS_RHR:
         {
-            printf("[at32uc_twis_write] AT32UC_TWIS_RHR is read-only!\n");
+            AVR32_LOG_DEV("[at32uc_twis_write] AT32UC_TWIS_RHR is read-only!\n");
             break;
         }
         case AT32UC_TWIS_THR:
         {
-            // TODO
-            printf("[at32uc_twis_write] AT32UC_TWIS_THR is not implemented!\n");
-            exit(-1);
+            // TODO: implement transmit holding register
+            qemu_log_mask(LOG_GUEST_ERROR, "[at32uc_twis_write] AT32UC_TWIS_THR is not implemented; ignoring write\n");
             break;
         }
         case AT32UC_TWIS_PECR:
         {
-            printf("[at32uc_twis_write] AT32UC_TWIS_PECR is read-only!\n");
+            AVR32_LOG_DEV("[at32uc_twis_write] AT32UC_TWIS_PECR is read-only!\n");
             break;
         }
         case AT32UC_TWIS_SR:
         {
-            printf("[at32uc_twis_write] AT32UC_TWIS_SR is read-only!\n");
+            AVR32_LOG_DEV("[at32uc_twis_write] AT32UC_TWIS_SR is read-only!\n");
             break;
         }
         case AT32UC_TWIS_IER: // Uses the same flags as SR
@@ -310,7 +310,7 @@ static void at32uc_twis_write(void *opaque, hwaddr addr, uint64_t val64, unsigne
         }
         case AT32UC_TWIS_IMR:
         {
-            printf("[at32uc_twis_write] AT32UC_TWIS_IMR is read-only!\n");
+            AVR32_LOG_DEV("[at32uc_twis_write] AT32UC_TWIS_IMR is read-only!\n");
             break;
         }
         case AT32UC_TWIS_SCR:
@@ -330,13 +330,12 @@ static void at32uc_twis_write(void *opaque, hwaddr addr, uint64_t val64, unsigne
         case AT32UC_TWIS_PR:
         case AT32UC_TWIS_VR:
         {
-            printf("[at32uc_twis_write] AT32UC_TWIS_P/VR are read-only!\n");
+            AVR32_LOG_DEV("[at32uc_twis_write] AT32UC_TWIS_P/VR are read-only!\n");
             break;
         }
         default:
         {
-            printf("[at32uc_twis_write] Writing unknown register 0x%lx", addr);
-            exit(-1);
+            qemu_log_mask(LOG_GUEST_ERROR, "[at32uc_twis_write] Writing unknown register 0x%lx\n", addr);
             break;
         }
     }

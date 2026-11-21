@@ -19,6 +19,7 @@
  */
 #include "helper_conditions.h"
 #include "tcg/tcg.h"
+#include "hw/avr32/avr32_log.h"
 
 /*
  * Returns the value that needs to be matched by the return register
@@ -107,7 +108,7 @@ int checkCondition(int condition, TCGv returnReg, TCGv cpu_r[], TCGv cpu_sflags[
             val = 1;
             break;
         default:
-            printf("[COND] ERROR: undefined condition %d\n", condition);
+            AVR32_LOG_CPU("[COND] ERROR: undefined condition %d\n", condition);
             g_assert_not_reached();
     }
     return val;

@@ -23,6 +23,7 @@
 #include "migration/vmstate.h"
 #include "qemu/module.h"
 #include "qom/object.h"
+#include "hw/avr32/avr32_log.h"
 
 #define RM3100_CCX_0 0x04
 #define RM3100_CCX_1 0x05
@@ -93,14 +94,14 @@ static uint8_t rm3100_rx(I2CSlave *i2c)
     uint8_t val;
 
     if (s->current_reg_idx >= RM3100_REG_COUNT) {
-        printf("[rm3100_rx] Out-of-bounds read at idx=%d\n", s->current_reg_idx );
+        AVR32_LOG_DEV("[rm3100_rx] Out-of-bounds read at idx=%d\n", s->current_reg_idx );
     } else if(s->current_reg_idx <= -1) {
-        printf("[rm3100_rx] reading without initialized register index\n");
+        AVR32_LOG_DEV("[rm3100_rx] reading without initialized register index\n");
     } else {
         if(s->current_reg_idx == RM3100_CCX_0) {
-            printf("[rm3100_rx] Reading Cyclic Counts\n");
+            AVR32_LOG_DEV("[rm3100_rx] Reading Cyclic Counts\n");
         } else if(s->current_reg_idx == RM3100_MX0) {
-            printf("[rm3100_rx] Reading Measurements\n");
+            AVR32_LOG_DEV("[rm3100_rx] Reading Measurements\n");
         } else if(s->current_reg_idx == RM3100_STATUS) {
         }
 
@@ -119,7 +120,7 @@ static int rm3100_tx(I2CSlave *i2c, uint8_t data)
     if(s->current_reg_idx <= -1) {
         s->current_reg_idx = data;
     } else if (s->current_reg_idx >= RM3100_REG_COUNT) {
-        printf("[rm3100_tx] Out-of-bounds write at idx=%d\n", s->current_reg_idx );
+        AVR32_LOG_DEV("[rm3100_tx] Out-of-bounds write at idx=%d\n", s->current_reg_idx );
     } else {
 
         // Check if the register is writable

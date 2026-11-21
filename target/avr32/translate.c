@@ -29,6 +29,7 @@
 #include "hw/core/tcg-cpu-ops.h"
 #include "exec/address-spaces.h"
 #include "stdlib.h"
+#include "hw/avr32/avr32_log.h"
 
 #define NUM_REG_PAGE_SIZE 16
 #define PC_REG 15
@@ -160,7 +161,10 @@ static bool trans_ACALL(DisasContext *ctx, arg_ACALL *a){
     TCGv temp = tcg_temp_new_i32();
     tcg_gen_movi_i32(temp, a->disp << 2);
 
-    tcg_gen_addi_i32(cpu_r[AVR32A_LR_REG], cpu_r[AVR32A_LR_REG], 0x2);
+    /* ACALL saves the address of the next instruction (PC + 2) in LR.
+     * The previous code did LR = LR + 2, corrupting the return-address
+     * chain across nested absolute calls (e.g. UFFS device init). */
+    tcg_gen_addi_i32(cpu_r[AVR32A_LR_REG], cpu_r[AVR32A_PC_REG], 0x2);
     tcg_gen_add_i32(cpu_r[AVR32A_PC_REG], temp, cpu_sysr[2]);
 
 
@@ -711,7 +715,10 @@ static bool trans_BREAKPOINT(DisasContext *ctx, arg_BREAKPOINT *a){
     gen_helper_debug(cpu_env);
     ctx->base.is_jmp = DISAS_EXIT;
     ctx->base.pc_next += 2;
-    return false;
+    /* The helper already raised the debug exception.  Returning false here
+     * would make the top-level translator also raise an illegal-instruction
+     * exception, trapping twice on a single BKPT. */
+    return true;
 }
 
 static bool trans_BREV_r(DisasContext *ctx, arg_BREV_r *a){
@@ -1021,28 +1028,50 @@ static bool trans_CSRFCZ(DisasContext *ctx, arg_CSRFCZ *a){
 }
 
 static bool trans_DIVS(DisasContext *ctx, arg_DIVS *a){
+    TCGLabel *zero_divisor = gen_new_label();
+    TCGLabel *done = gen_new_label();
     TCGv rx = tcg_temp_new_i32();
     TCGv ry = tcg_temp_new_i32();
 
     tcg_gen_mov_i32(rx, cpu_r[a->rx]);
     tcg_gen_mov_i32(ry, cpu_r[a->ry]);
 
+    tcg_gen_brcondi_i32(TCG_COND_EQ, ry, 0, zero_divisor);
+
     tcg_gen_div_i32(cpu_r[a->rd], rx, ry);
     tcg_gen_rem_i32(cpu_r[a->rd+1], rx, ry);
+    tcg_gen_br(done);
+
+    gen_set_label(zero_divisor);
+    tcg_gen_movi_i32(cpu_r[a->rd], 0);
+    tcg_gen_mov_i32(cpu_r[a->rd+1], rx);
+
+    gen_set_label(done);
 
     ctx->base.pc_next += 4;
     return true;
 }
 
 static bool trans_DIVU(DisasContext *ctx, arg_DIVU *a){
+    TCGLabel *zero_divisor = gen_new_label();
+    TCGLabel *done = gen_new_label();
     TCGv rx = tcg_temp_new_i32();
     TCGv ry = tcg_temp_new_i32();
 
     tcg_gen_mov_i32(rx, cpu_r[a->rx]);
     tcg_gen_mov_i32(ry, cpu_r[a->ry]);
 
+    tcg_gen_brcondi_i32(TCG_COND_EQ, ry, 0, zero_divisor);
+
     tcg_gen_divu_i32(cpu_r[a->rd], rx, ry);
     tcg_gen_remu_i32(cpu_r[a->rd+1], rx,ry);
+    tcg_gen_br(done);
+
+    gen_set_label(zero_divisor);
+    tcg_gen_movi_i32(cpu_r[a->rd], 0);
+    tcg_gen_mov_i32(cpu_r[a->rd+1], rx);
+
+    gen_set_label(done);
 
     ctx->base.pc_next += 4;
     return true;
@@ -1594,7 +1623,7 @@ static bool trans_LDW_f6(DisasContext *ctx, arg_LDW_f6 *a){
             tcg_gen_shri_i32(temp, temp, 24);
             break;
         default:
-            printf("[LDW_f6] ERROR: undefined condition %d\n", part);
+            AVR32_LOG_CPU("[LDW_f6] ERROR: undefined condition %d\n", part);
             g_assert_not_reached();
             return false;
     }
@@ -2232,6 +2261,9 @@ static bool trans_MAX(DisasContext *ctx, arg_MAX *a){
 }
 
 static bool trans_MCALL(DisasContext *ctx, arg_MCALL *a){
+    /* AVR32 ABI: mcall is used for calls through a table; callees may return
+     * with 'retal r12', so the return address must be in r12 as well as LR. */
+    tcg_gen_movi_i32(cpu_r[12], ctx->base.pc_next + 4);
     tcg_gen_addi_i32(cpu_r[LR_REG], cpu_r[PC_REG], 0x4);
     TCGv PC = cpu_r[PC_REG];
 
@@ -2278,16 +2310,21 @@ static bool trans_MEMC(DisasContext *ctx, arg_MEMC *a)
     return true;
 }
 
+/* MEMS/MEMT are memory-protection setup hints on this core. Treating them
+ * as no-ops keeps the guest running; returning false here would be turned
+ * into an illegal-instruction exception by the top-level translator. */
 static bool trans_MEMS_bp5_imm15(DisasContext *ctx, arg_MEMS_bp5_imm15 *a)
 {
-    //TODO: implement
-    return false;
+    qemu_log_mask(LOG_UNIMP, "AVR32: MEMS is not implemented, treating as nop\n");
+    ctx->base.pc_next += 4;
+    return true;
 }
 
 static bool trans_MEMT_bp5_imm15(DisasContext *ctx, arg_MEMT_bp5_imm15 *a)
 {
-    //TODO: implement
-    return false;
+    qemu_log_mask(LOG_UNIMP, "AVR32: MEMT is not implemented, treating as nop\n");
+    ctx->base.pc_next += 4;
+    return true;
 }
 
 static bool trans_MFSR(DisasContext *ctx, arg_MFSR *a){
@@ -4136,7 +4173,7 @@ static void avr32_tr_tb_stop(DisasContextBase *dcbase, CPUState *cs){
             tcg_gen_exit_tb(NULL, 0);
             break;
         default:
-            printf("[avr32_tr_tb_stop] ERROR: undefined condition\n");
+            AVR32_LOG_CPU("[avr32_tr_tb_stop] ERROR: undefined condition\n");
             g_assert_not_reached();
     }
 }

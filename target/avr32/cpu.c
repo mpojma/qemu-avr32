@@ -18,6 +18,7 @@
  * <http://www.gnu.org/licenses/lgpl-2.1.html>
  */
 #include "qemu/osdep.h"
+#include "hw/avr32/avr32_log.h"
 #include "qapi/error.h"
 #include "qemu/qemu-print.h"
 #include "exec/exec-all.h"
@@ -34,7 +35,7 @@ static bool first_reset = true;
 
 static void avr32_cpu_disas_set_info(CPUState *cpu, disassemble_info *info)
 {
-    printf("[AVR32-DISAS] avr32_cpu_disas_set_info\n");
+    AVR32_LOG_DISAS("[AVR32-DISAS] avr32_cpu_disas_set_info\n");
     info->mach = bfd_arch_avr32;
 }
 
@@ -78,7 +79,7 @@ static void avr32_cpu_realizefn(DeviceState *dev, Error **errp)
 static void avr32_cpu_reset(DeviceState *dev)
 {
     if(!first_reset) {
-        printf("[AVR32-CPU] CPU RESET\n");
+        AVR32_LOG_CPU("[AVR32-CPU] CPU RESET\n");
     }
     CPUState *cs = CPU(dev);
     AVR32ACPU *cpu = AVR32A_CPU(cs);
@@ -129,7 +130,7 @@ static void avr32_cpu_reset(DeviceState *dev)
 static ObjectClass* avr32_cpu_class_by_name(const char *cpu_model)
 {
     ObjectClass *oc;
-    printf("[AVR32-TODO] avr32_cpu_class_by_name: %s\n", cpu_model);
+    AVR32_LOG_CPU("[AVR32-TODO] avr32_cpu_class_by_name: %s\n", cpu_model);
     oc = object_class_by_name(AVR32A_CPU_TYPE_NAME("AT32UC3C"));
     return oc;
 }
@@ -167,7 +168,7 @@ static void avr32_cpu_set_pc(CPUState *cs, vaddr value)
 {
     AVR32ACPU *cpu = AVR32A_CPU(cs);
 
-    printf("[AVR32-CPU] avr32_cpu_set_pc, pc: %04lx\n", value);
+    AVR32_LOG_CPU("[AVR32-CPU] avr32_cpu_set_pc, pc: %04lx\n", value);
     cpu->env.r[AVR32A_PC_REG] = value;
 }
 
@@ -237,7 +238,7 @@ void avr32_cpu_synchronize_from_tb(CPUState *cs, const TranslationBlock *tb){
 
 static void avr32a_cpu_class_init(ObjectClass *oc, void *data)
 {
-    printf("CPU-INIT!\n");
+    AVR32_LOG_CPU("CPU-INIT!\n");
     AVR32ACPUClass *acc = AVR32A_CPU_CLASS(oc);
     CPUClass *cc = CPU_CLASS(oc);
     DeviceClass *dc = DEVICE_CLASS(oc);
@@ -274,7 +275,9 @@ static const AVR32ACPUDef avr32_cpu_defs[] = {
                 .parent_microarch = TYPE_AVR32A_CPU,
                 .core_type = AVR32_UC3,
                 .series_type = AVR32UC3_C,
-                .clock_speed = 66 * 1000 * 1000, /* 66 MHz */
+                /* NanoMind A3200 datasheet: CPU clock 8-64 MHz, typ. 32 MHz.
+                 * The old 66 MHz value was outside the documented range. */
+                .clock_speed = 32 * 1000 * 1000, /* 32 MHz (datasheet typical) */
                 .audio = false,
                 .aes = false
         }

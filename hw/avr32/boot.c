@@ -26,7 +26,10 @@
 #include <string.h>
 #include "hw/core/tcg-cpu-ops.h"
 #include "exec/exec-all.h"
+#include "exec/address-spaces.h"
 #include "target/avr32/helper_elf.h"
+#include "target/avr32/cpu.h"
+#include "hw/avr32/avr32_log.h"
 
 void avr32_copy_text_section(int e_shnum, FILE* file, Elf32_Shdr** sh_table, char *sh_strtable, FILE* output){
     int text_section_idx = -1;
@@ -37,7 +40,7 @@ void avr32_copy_text_section(int e_shnum, FILE* file, Elf32_Shdr** sh_table, cha
         }
     }
     if(text_section_idx >= 0){
-        printf("[AVR32-BOOT] Text section is at index %i\n", text_section_idx);
+        AVR32_LOG_DEV("[AVR32-BOOT] Text section is at index %i\n", text_section_idx);
     }
     else{
         error_report("[AVR32-BOOT] Unable to find .text section!\n");
@@ -47,51 +50,65 @@ void avr32_copy_text_section(int e_shnum, FILE* file, Elf32_Shdr** sh_table, cha
     char *buffer = malloc(sh_table[text_section_idx]->sh_size);
     fseek(file, sh_table[text_section_idx]->sh_offset, SEEK_SET);
     int res = fread(buffer, 1, sh_table[text_section_idx]->sh_size, file);
-    printf("[AVR32-BOOT] Loaded 0x%x bytes from .text section\n", res);
+    AVR32_LOG_DEV("[AVR32-BOOT] Loaded 0x%x bytes from .text section\n", res);
     fwrite(buffer, 1, res, output);
     free(buffer);
 }
 
-void avr32_copy_data_section(int e_shnum, FILE* file, Elf32_Shdr** sh_table, char *sh_strtable, FILE* output){
-    int data_section_idx = -1;
-    for(int i= 0; i< e_shnum; i++){
-        if(strcmp(&sh_strtable[sh_table[i]->sh_name], ".data") == 0){
-            data_section_idx = i;
+/* Load a section's bytes from the ELF file into the system address space at
+ * the section's virtual address (sh_addr).  Used for .data (initialized
+ * globals) and for zero-filling .bss. */
+static void avr32_load_section_to_ram(int e_shnum, FILE *file,
+                                      Elf32_Shdr **sh_table,
+                                      char *sh_strtable, const char *name)
+{
+    int idx = -1;
+    for (int i = 0; i < e_shnum; i++) {
+        if (strcmp(&sh_strtable[sh_table[i]->sh_name], name) == 0) {
+            idx = i;
             break;
         }
     }
-    if(data_section_idx >= 0){
-        printf("[AVR32-BOOT] Data section is at index %i\n", data_section_idx);
-    }
-    else{
-        error_report("[AVR32-BOOT] Unable to find .data section.\n");
+    if (idx < 0) {
+        AVR32_LOG_DEV("[AVR32-BOOT] Section %s not found, skipping\n", name);
         return;
     }
-    if(sh_table[data_section_idx]->sh_size <= 0){
-        printf("[AVR32-BOOT] Data section has size 0, skipping.\n");
-        return;
-    }
-    int padding_size = sh_table[data_section_idx]->sh_offset - (sh_table[data_section_idx - 1]->sh_offset + sh_table[data_section_idx - 1]->sh_size) - sh_table[data_section_idx]->sh_addr;
-    printf("[AVR32-BOOT] Data section padding size: 0x%x\n", padding_size);
-    char *buffer = malloc(padding_size);
-    memset(buffer, 0, padding_size);
-    fwrite(buffer, 1, padding_size, output);
-    free(buffer);
 
-    buffer = malloc(sh_table[data_section_idx]->sh_size);
-    fseek(file, sh_table[data_section_idx]->sh_offset, SEEK_SET);
-    int res = fread(buffer, 1, sh_table[data_section_idx]->sh_size, file);
-    printf("[AVR32-BOOT] Loaded 0x%x bytes from .data section\n", res);
-    fwrite(buffer, 1, res, output);
-    free(buffer);
+    uint32_t addr = sh_table[idx]->sh_addr;
+    uint32_t size = sh_table[idx]->sh_size;
+    if (size == 0) {
+        AVR32_LOG_DEV("[AVR32-BOOT] Section %s has size 0, skipping\n", name);
+        return;
+    }
+
+    char *buffer;
+    if (sh_table[idx]->sh_type == SHT_NOBITS) {
+        /* .bss: no bytes in the file, just zero-fill. */
+        buffer = g_malloc0(size);
+    } else {
+        buffer = g_malloc(size);
+        fseek(file, sh_table[idx]->sh_offset, SEEK_SET);
+        size_t res = fread(buffer, 1, size, file);
+        if (res != size) {
+            error_report("[AVR32-BOOT] Short read for section %s "
+                         "(%zu of 0x%x bytes)", name, res, size);
+            g_free(buffer);
+            return;
+        }
+    }
+
+    address_space_write(&address_space_memory, addr, MEMTXATTRS_UNSPECIFIED,
+                        buffer, size);
+    AVR32_LOG_DEV("[AVR32-BOOT] Loaded 0x%x bytes of %s at 0x%08x\n",
+                  size, name, addr);
+    g_free(buffer);
 }
 
 void avr32_copy_sections(int e_shnum, FILE* file, Elf32_Shdr** sh_table, char *sh_strtable, MemoryRegion *program_mr){
+    /* .text goes into the flash MemoryRegion via the raw-image loader. */
     FILE *output = fopen("/tmp/qemu_avr32_tmp_text_sec", "wb");
     avr32_copy_text_section(e_shnum, file, sh_table, sh_strtable, output);
-    avr32_copy_data_section(e_shnum, file, sh_table, sh_strtable, output);
     fclose(output);
-
 
     int bytes_loaded = load_image_mr("/tmp/qemu_avr32_tmp_text_sec", program_mr);
     if (bytes_loaded < 0) {
@@ -99,13 +116,19 @@ void avr32_copy_sections(int e_shnum, FILE* file, Elf32_Shdr** sh_table, char *s
                      "/tmp/qemu_avr32_tmp_text_sec");
         exit(1);
     }
-    printf("[AVR32-BOOT] Binary data successfully loaded\n");
+    AVR32_LOG_DEV("[AVR32-BOOT] .text loaded into flash (%d bytes)\n", bytes_loaded);
     remove("/tmp/qemu_avr32_tmp_text_sec");
-    printf("[AVR32-BOOT] Removed temp firmware file\n");
+
+    /* .data (initialized globals) and .bss must live in SRAM at their ELF
+     * virtual addresses (0x14 and 0x1930 for this firmware).  Loading them
+     * concatenated after .text into flash left the global function pointers
+     * zeroed, which made uffs_Mount() call through a NULL pointer. */
+    avr32_load_section_to_ram(e_shnum, file, sh_table, sh_strtable, ".data");
+    avr32_load_section_to_ram(e_shnum, file, sh_table, sh_strtable, ".bss");
 }
 
 bool avr32_load_elf_file(AVR32ACPU *cpu, const char *filename, MemoryRegion *program_mr){
-    printf("[AVR32-BOOT] Loading firmware images as ELF file\n");
+    AVR32_LOG_DEV("[AVR32-BOOT] Loading firmware images as ELF file\n");
 
     Elf32_Ehdr header;
     FILE* file = fopen(filename, "rb");
@@ -161,11 +184,15 @@ bool avr32_load_firmware(AVR32ACPU *cpu, MachineState *ms,
     }
 
     if(avr32_is_elf_file(AVR32_FIRMWARE_FILE)){
-        //TODO: For some reason QEMU internal ELF-loaders fail to load an AVR32 Elf file. For now we use a custom elf-loader to extract the .text section from an elf-file.
-        avr32_load_elf_file(cpu, AVR32_FIRMWARE_FILE, program_mr);
+        /* QEMU's generic ELF loader cannot handle this AVR32 ELF (see the
+         * original TODO).  Use the custom loader, which now places .text in
+         * the flash region and .data/.bss in SRAM at their ELF addresses. */
+        if (!avr32_load_elf_file(cpu, AVR32_FIRMWARE_FILE, program_mr)) {
+            return false;
+        }
     }
     else{
-        printf("[AVR32-BOOT]: Loading firmware images as raw binary\n");
+        AVR32_LOG_DEV("[AVR32-BOOT]: Loading firmware images as raw binary\n");
         int bytes_loaded = load_image_mr(AVR32_FIRMWARE_FILE, program_mr);
         if (bytes_loaded < 0) {
             error_report("[AVR32-BOOT] Unable to load firmware image %s as raw binary",
@@ -173,7 +200,7 @@ bool avr32_load_firmware(AVR32ACPU *cpu, MachineState *ms,
             return false;
         }
     }
-    printf("[AVR32-BOOT] Loaded boot image successfully\n");
+    AVR32_LOG_DEV("[AVR32-BOOT] Loaded boot image successfully\n");
 
     return true;
 }

@@ -19,6 +19,7 @@
  */
 #include "qemu/osdep.h"
 #include "cpu.h"
+#include "hw/avr32/avr32_log.h"
 
 typedef struct DisasContext {
     // Provided by QEMU
@@ -33,7 +34,7 @@ typedef struct DisasContext {
 // Decode helper required only if insn wide is variable
 static uint32_t decode_insn_load_bytes(DisasContext *ctx, uint32_t insn,
                                        int i, int n){
-    printf("[AVR32-DISAS] decode_insn_load_bytes at: 0x%04x\n", ctx->pc);
+    AVR32_LOG_DISAS("[AVR32-DISAS] decode_insn_load_bytes at: 0x%04x\n", ctx->pc);
 
     // TODO: We can probably just load 4 bytes and decide to only use 2 of them
     ctx->dis->read_memory_func(ctx->addr, ctx->bytes, 2, ctx->dis);
@@ -44,12 +45,12 @@ static uint32_t decode_insn_load_bytes(DisasContext *ctx, uint32_t insn,
 
         insn = bfd_getb32(ctx->bytes);
         ctx->addr += 4;
-        printf("[AVR32-DISAS] decode_insn_load_bytes, loaded (long): 0x%04x\n", insn);
+        AVR32_LOG_DISAS("[AVR32-DISAS] decode_insn_load_bytes, loaded (long): 0x%04x\n", insn);
 
     } else {
         insn = bfd_getb16(ctx->bytes) << 16;
         ctx->addr += 2;
-        printf("[AVR32-DISAS] decode_insn_load_bytes, loaded (short): 0x%04x\n", insn);
+        AVR32_LOG_DISAS("[AVR32-DISAS] decode_insn_load_bytes, loaded (short): 0x%04x\n", insn);
     }
 
     return insn;
@@ -67,7 +68,7 @@ static bool decode_insn(DisasContext *ctx, uint32_t insn);
 
 int avr32_print_insn(bfd_vma addr, disassemble_info *dis)
 {
-    printf("[AVR32-DISAS] avr32_print_insn\n");
+    AVR32_LOG_DISAS("[AVR32-DISAS] avr32_print_insn\n");
     DisasContext ctx;
     uint32_t insn;
     int i;

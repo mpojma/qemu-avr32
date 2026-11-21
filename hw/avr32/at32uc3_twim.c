@@ -24,6 +24,7 @@
 #include "migration/vmstate.h"
 #include "qom/object.h"
 #include "qemu/log.h"
+#include "hw/avr32/avr32_log.h"
 
 #define AT32UC_TWIM_CR      0x00
 #define AT32UC_TWIM_CWGR    0x04
@@ -127,9 +128,14 @@ static void twim_maybe_execute_cmdr(AT32UC3TWIMState* s)
 
         if(s->cmdr & AT32UC_TWIM_CMDR_START) {
             if (i2c_start_transfer(s->bus, sadr, s->cmdr & AT32UC_TWIM_CMDR_READ)) {
-                printf("[at32uc_twim_write] Failed to start a transfer, unknown SADR=%d?\n", sadr);
-                exit(-1);
-            } else {
+                qemu_log_mask(LOG_GUEST_ERROR, "[at32uc_twim_write] Failed to start a transfer, unknown SADR=%d?\n", sadr);
+                /* No slave answered: abort this command cleanly instead of
+                 * terminating the host process. Report DNAK and go idle. */
+                s->sr |= AT32UC_TWIM_SR_DNAK;
+                s->cmdr &= ~AT32UC_TWIM_CMDR_VALID;
+                s->sr |= AT32UC_TWIM_SR_IDLE;
+                twim_update_irq(s);
+                return;
             }
         }
 
@@ -165,9 +171,10 @@ static void twim_maybe_execute_cmdr(AT32UC3TWIMState* s)
             s->sr |= AT32UC_TWIM_SR_IDLE;
         } else {
             if(s->cmdr & AT32UC_TWIM_CMDR_READ) {
-                // TODO
-                printf("[at32uc_twim_write] Non-PDCA receiving is not implemented!\n");
-                exit(-1);
+                // TODO: implement non-PDCA receive path
+                qemu_log_mask(LOG_GUEST_ERROR, "[at32uc_twim_write] Non-PDCA receiving is not implemented!\n");
+                s->cmdr &= ~AT32UC_TWIM_CMDR_VALID;
+                s->sr |= AT32UC_TWIM_SR_IDLE;
             } else {
                 s->sr |= AT32UC_TWIM_SR_TXRDY;
             }
@@ -184,7 +191,7 @@ static uint64_t at32uc_twim_read(void *opaque, hwaddr addr, unsigned int size)
     switch (addr) {
         case AT32UC_TWIM_CR:
         {
-            printf("[at32uc_twim_write] AT32UC_TWIM_CR is write-only\n");
+            AVR32_LOG_DEV("[at32uc_twim_write] AT32UC_TWIM_CR is write-only\n");
             return 0xdead;
         }
         case AT32UC_TWIM_CWGR:
@@ -217,7 +224,7 @@ static uint64_t at32uc_twim_read(void *opaque, hwaddr addr, unsigned int size)
         case AT32UC_TWIM_IER:
         case AT32UC_TWIM_IDR:
         {
-            printf("[at32uc_twim_read] AT32UC_TWIM_IE/DR, are write-only\n");
+            AVR32_LOG_DEV("[at32uc_twim_read] AT32UC_TWIM_IE/DR, are write-only\n");
             return 0xdead;
         }
         case AT32UC_TWIM_IMR:
@@ -226,7 +233,7 @@ static uint64_t at32uc_twim_read(void *opaque, hwaddr addr, unsigned int size)
         }
         case AT32UC_TWIM_SCR:
         {
-            printf("[at32uc_twim_read] AT32UC_TWIM_SCR is write-only\n");
+            AVR32_LOG_DEV("[at32uc_twim_read] AT32UC_TWIM_SCR is write-only\n");
             return 0xdead;
         }
         default:
@@ -254,7 +261,7 @@ static void at32uc_twim_write(void *opaque, hwaddr addr, uint64_t val64, unsigne
             }
 
             if(at32uc3_twim_is_enabled(s) && s->cr & AT32UC_TWIM_CR_SWRST) {
-                printf("[at32uc_twim_write] AT32UC_TWIM_CR_SWRST \n");
+                AVR32_LOG_DEV("[at32uc_twim_write] AT32UC_TWIM_CR_SWRST \n");
                 at32uc3_twim_do_reset(s);
             }
 
@@ -298,7 +305,7 @@ static void at32uc_twim_write(void *opaque, hwaddr addr, uint64_t val64, unsigne
         }
         case AT32UC_TWIM_RHR:
         {
-            printf("[at32uc_twim_write] AT32UC_TWIM_RHR is read-only!\n");
+            AVR32_LOG_DEV("[at32uc_twim_write] AT32UC_TWIM_RHR is read-only!\n");
             break;
         }
         case AT32UC_TWIM_THR:
@@ -336,7 +343,7 @@ static void at32uc_twim_write(void *opaque, hwaddr addr, uint64_t val64, unsigne
         }
         case AT32UC_TWIM_IMR:
         {
-            printf("[at32uc_twim_write] AT32UC_TWIM_IMR is read-only!\n");
+            AVR32_LOG_DEV("[at32uc_twim_write] AT32UC_TWIM_IMR is read-only!\n");
             break;
         }
         case AT32UC_TWIM_SCR:
@@ -351,7 +358,7 @@ static void at32uc_twim_write(void *opaque, hwaddr addr, uint64_t val64, unsigne
         }
         default:
         {
-            printf("[at32uc_twim_write] Not implemented! addr=0x%lx\n", addr);
+            AVR32_LOG_DEV("[at32uc_twim_write] Not implemented! addr=0x%lx\n", addr);
             break;
         }
     }

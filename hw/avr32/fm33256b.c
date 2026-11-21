@@ -19,9 +19,14 @@
  */
 
 #include "qemu/osdep.h"
+#include "sysemu/block-backend.h"
+#include "hw/block/block.h"
+#include "hw/qdev-properties.h"
+#include "hw/qdev-properties-system.h"
 #include "hw/ssi/ssi.h"
 #include "qemu/module.h"
 #include "qom/object.h"
+#include "hw/avr32/avr32_log.h"
 
 #define FM33256B_WREN 0x06  // 0000 0110b
 #define FM33256B_WRDI 0x04  // 0000 0100b
@@ -59,7 +64,11 @@ struct FM33256BState {
     uint8_t status;
 
     uint8_t regs[FM33256B_REGS_COUNT];
-    uint8_t data[FM33256B_MAX_DATA];
+
+    /* Optional persistent storage.  When a drive is attached, storage points
+     * into the BlockBackend buffer; otherwise it is a private RAM buffer. */
+    BlockBackend *blk;
+    uint8_t *storage;
 };
 
 typedef struct FM33256BState FM33256BState;
@@ -95,7 +104,10 @@ static void fm33256b_reset(DeviceState *dev)
     s->addr = 0;
     s->cmd = 0;
 
-    memset(s->data, 0, FM33256B_MAX_DATA);
+    /* Storage is allocated/loaded in realize(), not here.  Reset runs before
+     * realize and would otherwise wipe persisted content.  Companion regs
+     * stay in RAM with their power-on defaults on every reset. */
+    s->storage = NULL;
 
     memset(s->regs, 0, FM33256B_REGS_COUNT);
 
@@ -109,6 +121,26 @@ static void fm33256b_reset(DeviceState *dev)
     s->regs[0x1c] = 0x81;
     s->regs[0x1d] = 0x81;
 
+}
+
+/* Write the whole 32 KB working copy back to the backing file.  Synchronous
+ * blk_pwrite keeps this simple and deterministic for 32 KB; no-op without a
+ * drive. */
+static void fm33256b_sync(FM33256BState *s)
+{
+    int ret;
+
+    if (!s->blk) {
+        return;
+    }
+
+    /* blk_pwrite(blk, offset, bytes, buf, flags) */
+    ret = blk_pwrite(s->blk, 0, FM33256B_MAX_DATA, s->storage, 0);
+    if (ret < 0) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "[fm33256b_sync] failed to persist FRAM: %s\n",
+                      strerror(-ret));
+    }
 }
 
 static uint32_t fm33256b_transfer8(SSIPeripheral *ss, uint32_t tx)
@@ -136,12 +168,12 @@ static uint32_t fm33256b_transfer8(SSIPeripheral *ss, uint32_t tx)
             switch(s->cmd) {
                 case FM33256B_WREN: {
                     s->status |= FM33256B_STATUS_WEL;
-                    s->status = STATE_IDLE;
+                    s->state = STATE_IDLE;
                     break;
                 }
                 case FM33256B_WRDI: {
                     s->status &= ~FM33256B_STATUS_WEL;
-                    s->status = STATE_IDLE;
+                    s->state = STATE_IDLE;
                     break;
                 }
                 case FM33256B_RDSR: {
@@ -149,33 +181,35 @@ static uint32_t fm33256b_transfer8(SSIPeripheral *ss, uint32_t tx)
                     break;
                 }
                 case FM33256B_WRSR: {
-                    if(s->state & FM33256B_STATUS_WEL) {
+                    if(s->status & FM33256B_STATUS_WEL) {
                         if(tx & FM33256B_STATUS_BP0) {
-                            s->state |= FM33256B_STATUS_BP0;
+                            s->status |= FM33256B_STATUS_BP0;
                         } else {
-                            s->state &= ~FM33256B_STATUS_BP0;
+                            s->status &= ~FM33256B_STATUS_BP0;
                         }
 
                         if(tx & FM33256B_STATUS_BP1) {
-                            s->state |= FM33256B_STATUS_BP1;
+                            s->status |= FM33256B_STATUS_BP1;
                         } else {
-                            s->state &= ~FM33256B_STATUS_BP1;
+                            s->status &= ~FM33256B_STATUS_BP1;
                         }
 
-                        s->state &= ~FM33256B_STATUS_WEL;
+                        s->status &= ~FM33256B_STATUS_WEL;
                     }
+                    s->state = STATE_IDLE;
                     break;
                 }
                 case FM33256B_WRITE: {
-                    if(s->state & FM33256B_STATUS_WEL) {
-                        s->data[s->addr] = tx & 0xff;
+                    if(s->status & FM33256B_STATUS_WEL) {
+                        s->storage[s->addr] = tx & 0xff;
                         fm33256b_update_addr(s);
+                        fm33256b_sync(s);
                     }
                     break;
                 }
                 case FM33256B_READ: {
-                    ret = s->data[s->addr];
-                    printf("[fm33256b_transfer8] FM33256B_READ data[0x%x]=0x%x\n", s->addr, ret);
+                    ret = s->storage[s->addr];
+                    AVR32_LOG_DEV("[fm33256b_transfer8] FM33256B_READ storage[0x%x]=0x%x\n", s->addr, ret);
 
                     fm33256b_update_addr(s);
                     break;
@@ -186,15 +220,15 @@ static uint32_t fm33256b_transfer8(SSIPeripheral *ss, uint32_t tx)
                     break;
                 }
                 case FM33256B_WRPC: {
-                    if(s->state & FM33256B_STATUS_WEL) {
+                    if(s->status & FM33256B_STATUS_WEL) {
                         s->regs[s->reg_idx] = tx & 0xff;
                         fm33256b_update_reg_idx(s);
                     }
                     break;
                 }
                 default: {
-                    printf("[fm33256b_transfer8] Executing unknown/unimplemented cmd=0x%x\n", s->cmd);
-                    exit(-1);
+                    qemu_log_mask(LOG_GUEST_ERROR, "[fm33256b_transfer8] Executing unknown/unimplemented cmd=0x%x\n", s->cmd);
+                    ret = 0;
                 }
             }
             break;
@@ -206,7 +240,8 @@ static uint32_t fm33256b_transfer8(SSIPeripheral *ss, uint32_t tx)
             switch(s->cmd) {
                 case FM33256B_WREN:
                 case FM33256B_WRDI:
-                case FM33256B_RDSR: {
+                case FM33256B_RDSR:
+                case FM33256B_WRSR: {
                     s->state = STATE_RUN_CMD;
                     break;
                 }
@@ -221,8 +256,8 @@ static uint32_t fm33256b_transfer8(SSIPeripheral *ss, uint32_t tx)
                     break;
                 }
                 default: {
-                    printf("[fm33256b_transfer8] Executing unknown/unimplemented cmd=0x%x\n", s->cmd);
-                    exit(-1);
+                    qemu_log_mask(LOG_GUEST_ERROR, "[fm33256b_transfer8] Executing unknown/unimplemented cmd=0x%x\n", s->cmd);
+                    ret = 0;
                 }
             }
             break;
@@ -234,7 +269,7 @@ static uint32_t fm33256b_transfer8(SSIPeripheral *ss, uint32_t tx)
 
 static int fm33256b_cs(SSIPeripheral *ss, bool select)
 {
-    printf("[fm33256b_cs] select=%d\n", select);
+    AVR32_LOG_DEV("[fm33256b_cs] select=%d\n", select);
     FM33256BState* s = FM33256B(ss);
 
     if(select) {
@@ -246,13 +281,52 @@ static int fm33256b_cs(SSIPeripheral *ss, bool select)
 
 static void fm33256b_realize(SSIPeripheral *ss, Error **errp)
 {
+    FM33256BState* s = FM33256B(ss);
+    int ret;
 
+    if (s->blk) {
+        uint64_t perm = BLK_PERM_CONSISTENT_READ | BLK_PERM_WRITE;
+        ret = blk_set_perm(s->blk, perm, BLK_PERM_ALL, errp);
+        if (ret < 0) {
+            return;
+        }
+
+        s->storage = blk_blockalign(s->blk, FM33256B_MAX_DATA);
+        if (!blk_check_size_and_read_all(s->blk, s->storage,
+                                         FM33256B_MAX_DATA, errp)) {
+            return;
+        }
+        /* Log (leveled) that the backing file was loaded, with a small
+         * fingerprint so we can confirm the guest sees these bytes. */
+        {
+            uint32_t sum = 0;
+            for (int i = 0; i < FM33256B_MAX_DATA; i++) {
+                sum += s->storage[i];
+            }
+            AVR32_LOG_DEV("[fm33256b] loaded %d bytes from drive; "
+                          "first8=%02x%02x%02x%02x%02x%02x%02x%02x sum=0x%08x\n",
+                          FM33256B_MAX_DATA,
+                          s->storage[0], s->storage[1], s->storage[2], s->storage[3],
+                          s->storage[4], s->storage[5], s->storage[6], s->storage[7],
+                          sum);
+        }
+    } else {
+        s->storage = blk_blockalign(NULL, FM33256B_MAX_DATA);
+        memset(s->storage, 0, FM33256B_MAX_DATA);
+        AVR32_LOG_DEV("[fm33256b] no drive: %d bytes zero-filled\n",
+                      FM33256B_MAX_DATA);
+    }
 }
 
 static void fm33256b_inst_init(Object *obj)
 {
 
 }
+
+static Property fm33256b_properties[] = {
+    DEFINE_PROP_DRIVE("drive", FM33256BState, blk),
+    DEFINE_PROP_END_OF_LIST(),
+};
 
 static void fm33256b_class_init(ObjectClass *klass, void *data)
 {
@@ -265,7 +339,7 @@ static void fm33256b_class_init(ObjectClass *klass, void *data)
     k->set_cs = fm33256b_cs;
     k->cs_polarity = SSI_CS_LOW;
 //    dc->vmsd = &vmstate_m25p80;
-//    device_class_set_props(dc, m25p80_properties);
+    device_class_set_props(dc, fm33256b_properties);
     dc->reset = fm33256b_reset;
 //    mc->pi = data;
 }

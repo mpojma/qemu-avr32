@@ -1,0 +1,24 @@
+# DEPRECATED — use Container/Dockerfile (same behaviour, leaner context) or,
+# preferably, the canonical qemu-avr32/contrib/docker/Dockerfile.
+# Build QEMU from the LOCAL patched source tree (parent directory) so fixes
+# to fm33256b.c / target/avr32 are included.
+#   podman build -f Container/Dockerfile.local -t qemu-avr32-local .
+FROM ubuntu:22.04
+ENV DEBIAN_FRONTEND=noninteractive TZ=Europe/Madrid
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    tzdata git ca-certificates build-essential ninja-build pkg-config \
+    python3 python3-venv python3-pip libglib2.0-dev libpixman-1-dev \
+    vim mc flex bison gdb-multiarch \
+    && ln -snf /usr/share/zoneinfo/$TZ /etc/localtime \
+    && echo $TZ > /etc/timezone \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy the already-checked-out (and patched) QEMU source
+COPY qemu-avr32 /src
+
+WORKDIR /src/build
+RUN ../configure --target-list=avr32-softmmu --disable-docs --disable-werror && make -j"$(nproc)" && make install
+
+WORKDIR /workspace
+ENTRYPOINT ["qemu-system-avr32"]
