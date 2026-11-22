@@ -131,6 +131,7 @@ static int coroutine_fn stream_run(Job *job, Error **errp)
     BlockDriverState *unfiltered_bs = bdrv_skip_filters(s->target_bs);
     int64_t len;
     int64_t offset = 0;
+    uint64_t delay_ns = 0;
     int error = 0;
     int64_t n = 0; /* bytes */
 
@@ -154,7 +155,7 @@ static int coroutine_fn stream_run(Job *job, Error **errp)
         /* Note that even when no rate limit is applied we need to yield
          * with no pending I/O here so that bdrv_drain_all() returns.
          */
-        block_job_ratelimit_sleep(&s->common);
+        job_sleep_ns(&s->common.job, delay_ns);
         if (job_is_cancelled(&s->common.job)) {
             break;
         }
@@ -203,7 +204,9 @@ static int coroutine_fn stream_run(Job *job, Error **errp)
         /* Publish progress */
         job_progress_update(&s->common.job, n);
         if (copy) {
-            block_job_ratelimit_processed_bytes(&s->common, n);
+            delay_ns = block_job_ratelimit_get_delay(&s->common, n);
+        } else {
+            delay_ns = 0;
         }
     }
 

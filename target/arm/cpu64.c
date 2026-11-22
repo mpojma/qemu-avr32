@@ -95,7 +95,7 @@ void arm_cpu_sve_finalize(ARMCPU *cpu, Error **errp)
 
         if (kvm_enabled()) {
             /*
-             * For KVM we have to automatically enable all supported uninitialized
+             * For KVM we have to automatically enable all supported unitialized
              * lengths, even when the smaller lengths are not all powers-of-two.
              */
             vq_map |= vq_supported & ~vq_init & vq_mask;
@@ -122,10 +122,10 @@ void arm_cpu_sve_finalize(ARMCPU *cpu, Error **errp)
         vq = ctz32(tmp) + 1;
 
         max_vq = vq <= ARM_MAX_VQ ? vq - 1 : ARM_MAX_VQ;
-        vq_mask = max_vq > 0 ? MAKE_64BIT_MASK(0, max_vq) : 0;
+        vq_mask = MAKE_64BIT_MASK(0, max_vq);
         vq_map = vq_supported & ~vq_init & vq_mask;
 
-        if (vq_map == 0) {
+        if (max_vq == 0 || vq_map == 0) {
             error_setg(errp, "cannot disable sve%d", vq * 128);
             error_append_hint(errp, "Disabling sve%d results in all "
                               "vector lengths being disabled.\n",

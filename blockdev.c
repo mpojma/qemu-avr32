@@ -153,22 +153,12 @@ void blockdev_mark_auto_del(BlockBackend *blk)
 
     JOB_LOCK_GUARD();
 
-    do {
-        job = block_job_next_locked(NULL);
-        while (job && (job->job.cancelled ||
-                       job->job.deferred_to_main_loop ||
-                       !block_job_has_bdrv(job, blk_bs(blk))))
-        {
-            job = block_job_next_locked(job);
-        }
-        if (job) {
-            /*
-             * This drops the job lock temporarily and polls, so we need to
-             * restart processing the list from the start after this.
-             */
+    for (job = block_job_next_locked(NULL); job;
+         job = block_job_next_locked(job)) {
+        if (block_job_has_bdrv(job, blk_bs(blk))) {
             job_cancel_locked(&job->job, false);
         }
-    } while (job);
+    }
 
     dinfo->auto_del = 1;
 }
@@ -341,10 +331,10 @@ static bool parse_stats_intervals(BlockAcctStats *stats, QList *intervals,
         switch (qobject_type(entry->value)) {
 
         case QTYPE_QSTRING: {
-            uint64_t length;
+            unsigned long long length;
             const char *str = qstring_get_str(qobject_to(QString,
                                                          entry->value));
-            if (parse_uint_full(str, 10, &length) == 0 &&
+            if (parse_uint_full(str, &length, 10) == 0 &&
                 length > 0 && length <= UINT_MAX) {
                 block_acct_add_interval(stats, (unsigned) length);
             } else {
@@ -662,7 +652,6 @@ err_no_opts:
 /* Takes the ownership of bs_opts */
 BlockDriverState *bds_tree_init(QDict *bs_opts, Error **errp)
 {
-    BlockDriverState *bs;
     int bdrv_flags = 0;
 
     GLOBAL_STATE_CODE();
@@ -677,11 +666,7 @@ BlockDriverState *bds_tree_init(QDict *bs_opts, Error **errp)
         bdrv_flags |= BDRV_O_INACTIVE;
     }
 
-    aio_context_acquire(qemu_get_aio_context());
-    bs = bdrv_open(NULL, NULL, bs_opts, bdrv_flags, errp);
-    aio_context_release(qemu_get_aio_context());
-
-    return bs;
+    return bdrv_open(NULL, NULL, bs_opts, bdrv_flags, errp);
 }
 
 void blockdev_close_all_bdrv_states(void)
@@ -1193,22 +1178,79 @@ out_aio_context:
     return NULL;
 }
 
+/* New and old BlockDriverState structs for atomic group operations */
+
+typedef struct BlkActionState BlkActionState;
+
+/**
+ * BlkActionOps:
+ * Table of operations that define an Action.
+ *
+ * @instance_size: Size of state struct, in bytes.
+ * @prepare: Prepare the work, must NOT be NULL.
+ * @commit: Commit the changes, can be NULL.
+ * @abort: Abort the changes on fail, can be NULL.
+ * @clean: Clean up resources after all transaction actions have called
+ *         commit() or abort(). Can be NULL.
+ *
+ * Only prepare() may fail. In a single transaction, only one of commit() or
+ * abort() will be called. clean() will always be called if it is present.
+ *
+ * Always run under BQL.
+ */
+typedef struct BlkActionOps {
+    size_t instance_size;
+    void (*prepare)(BlkActionState *common, Error **errp);
+    void (*commit)(BlkActionState *common);
+    void (*abort)(BlkActionState *common);
+    void (*clean)(BlkActionState *common);
+} BlkActionOps;
+
+/**
+ * BlkActionState:
+ * Describes one Action's state within a Transaction.
+ *
+ * @action: QAPI-defined enum identifying which Action to perform.
+ * @ops: Table of ActionOps this Action can perform.
+ * @block_job_txn: Transaction which this action belongs to.
+ * @entry: List membership for all Actions in this Transaction.
+ *
+ * This structure must be arranged as first member in a subclassed type,
+ * assuming that the compiler will also arrange it to the same offsets as the
+ * base class.
+ */
+struct BlkActionState {
+    TransactionAction *action;
+    const BlkActionOps *ops;
+    JobTxn *block_job_txn;
+    TransactionProperties *txn_props;
+    QTAILQ_ENTRY(BlkActionState) entry;
+};
+
 /* internal snapshot private data */
 typedef struct InternalSnapshotState {
+    BlkActionState common;
     BlockDriverState *bs;
     QEMUSnapshotInfo sn;
     bool created;
 } InternalSnapshotState;
 
-static void internal_snapshot_abort(void *opaque);
-static void internal_snapshot_clean(void *opaque);
-TransactionActionDrv internal_snapshot_drv = {
-    .abort = internal_snapshot_abort,
-    .clean = internal_snapshot_clean,
-};
 
-static void internal_snapshot_action(BlockdevSnapshotInternal *internal,
-                                     Transaction *tran, Error **errp)
+static int action_check_completion_mode(BlkActionState *s, Error **errp)
+{
+    if (s->txn_props->completion_mode != ACTION_COMPLETION_MODE_INDIVIDUAL) {
+        error_setg(errp,
+                   "Action '%s' does not support Transaction property "
+                   "completion-mode = %s",
+                   TransactionActionKind_str(s->action->type),
+                   ActionCompletionMode_str(s->txn_props->completion_mode));
+        return -1;
+    }
+    return 0;
+}
+
+static void internal_snapshot_prepare(BlkActionState *common,
+                                      Error **errp)
 {
     Error *local_err = NULL;
     const char *device;
@@ -1217,14 +1259,24 @@ static void internal_snapshot_action(BlockdevSnapshotInternal *internal,
     QEMUSnapshotInfo old_sn, *sn;
     bool ret;
     int64_t rt;
-    InternalSnapshotState *state = g_new0(InternalSnapshotState, 1);
+    BlockdevSnapshotInternal *internal;
+    InternalSnapshotState *state;
     AioContext *aio_context;
     int ret1;
 
-    tran_add(tran, &internal_snapshot_drv, state);
+    g_assert(common->action->type ==
+             TRANSACTION_ACTION_KIND_BLOCKDEV_SNAPSHOT_INTERNAL_SYNC);
+    internal = common->action->u.blockdev_snapshot_internal_sync.data;
+    state = DO_UPCAST(InternalSnapshotState, common, common);
 
+    /* 1. parse input */
     device = internal->device;
     name = internal->name;
+
+    /* 2. check for validation */
+    if (action_check_completion_mode(common, errp) < 0) {
+        return;
+    }
 
     bs = qmp_get_root_bs(device, errp);
     if (!bs) {
@@ -1301,9 +1353,10 @@ out:
     aio_context_release(aio_context);
 }
 
-static void internal_snapshot_abort(void *opaque)
+static void internal_snapshot_abort(BlkActionState *common)
 {
-    InternalSnapshotState *state = opaque;
+    InternalSnapshotState *state =
+                             DO_UPCAST(InternalSnapshotState, common, common);
     BlockDriverState *bs = state->bs;
     QEMUSnapshotInfo *sn = &state->sn;
     AioContext *aio_context;
@@ -1327,9 +1380,10 @@ static void internal_snapshot_abort(void *opaque)
     aio_context_release(aio_context);
 }
 
-static void internal_snapshot_clean(void *opaque)
+static void internal_snapshot_clean(BlkActionState *common)
 {
-    g_autofree InternalSnapshotState *state = opaque;
+    InternalSnapshotState *state = DO_UPCAST(InternalSnapshotState,
+                                             common, common);
     AioContext *aio_context;
 
     if (!state->bs) {
@@ -1346,22 +1400,14 @@ static void internal_snapshot_clean(void *opaque)
 
 /* external snapshot private data */
 typedef struct ExternalSnapshotState {
+    BlkActionState common;
     BlockDriverState *old_bs;
     BlockDriverState *new_bs;
     bool overlay_appended;
 } ExternalSnapshotState;
 
-static void external_snapshot_commit(void *opaque);
-static void external_snapshot_abort(void *opaque);
-static void external_snapshot_clean(void *opaque);
-TransactionActionDrv external_snapshot_drv = {
-    .commit = external_snapshot_commit,
-    .abort = external_snapshot_abort,
-    .clean = external_snapshot_clean,
-};
-
-static void external_snapshot_action(TransactionAction *action,
-                                     Transaction *tran, Error **errp)
+static void external_snapshot_prepare(BlkActionState *common,
+                                      Error **errp)
 {
     int ret;
     int flags = 0;
@@ -1374,11 +1420,11 @@ static void external_snapshot_action(TransactionAction *action,
     const char *snapshot_ref;
     /* File name of the new image (for 'blockdev-snapshot-sync') */
     const char *new_image_file;
-    ExternalSnapshotState *state = g_new0(ExternalSnapshotState, 1);
+    ExternalSnapshotState *state =
+                             DO_UPCAST(ExternalSnapshotState, common, common);
+    TransactionAction *action = common->action;
     AioContext *aio_context;
     uint64_t perm, shared;
-
-    tran_add(tran, &external_snapshot_drv, state);
 
     /* 'blockdev-snapshot' and 'blockdev-snapshot-sync' have similar
      * purpose but a different set of parameters */
@@ -1406,6 +1452,9 @@ static void external_snapshot_action(TransactionAction *action,
     }
 
     /* start processing */
+    if (action_check_completion_mode(common, errp) < 0) {
+        return;
+    }
 
     state->old_bs = bdrv_lookup_bs(device, node_name, errp);
     if (!state->old_bs) {
@@ -1485,19 +1534,13 @@ static void external_snapshot_action(TransactionAction *action,
         }
         qdict_put_str(options, "driver", format);
     }
-    aio_context_release(aio_context);
 
-    aio_context_acquire(qemu_get_aio_context());
     state->new_bs = bdrv_open(new_image_file, snapshot_ref, options, flags,
                               errp);
-    aio_context_release(qemu_get_aio_context());
-
     /* We will manually add the backing_hd field to the bs later */
     if (!state->new_bs) {
-        return;
+        goto out;
     }
-
-    aio_context_acquire(aio_context);
 
     /*
      * Allow attaching a backing file to an overlay that's already in use only
@@ -1535,9 +1578,10 @@ out:
     aio_context_release(aio_context);
 }
 
-static void external_snapshot_commit(void *opaque)
+static void external_snapshot_commit(BlkActionState *common)
 {
-    ExternalSnapshotState *state = opaque;
+    ExternalSnapshotState *state =
+                             DO_UPCAST(ExternalSnapshotState, common, common);
     AioContext *aio_context;
 
     aio_context = bdrv_get_aio_context(state->old_bs);
@@ -1553,9 +1597,10 @@ static void external_snapshot_commit(void *opaque)
     aio_context_release(aio_context);
 }
 
-static void external_snapshot_abort(void *opaque)
+static void external_snapshot_abort(BlkActionState *common)
 {
-    ExternalSnapshotState *state = opaque;
+    ExternalSnapshotState *state =
+                             DO_UPCAST(ExternalSnapshotState, common, common);
     if (state->new_bs) {
         if (state->overlay_appended) {
             AioContext *aio_context;
@@ -1595,9 +1640,10 @@ static void external_snapshot_abort(void *opaque)
     }
 }
 
-static void external_snapshot_clean(void *opaque)
+static void external_snapshot_clean(BlkActionState *common)
 {
-    g_autofree ExternalSnapshotState *state = opaque;
+    ExternalSnapshotState *state =
+                             DO_UPCAST(ExternalSnapshotState, common, common);
     AioContext *aio_context;
 
     if (!state->old_bs) {
@@ -1614,6 +1660,7 @@ static void external_snapshot_clean(void *opaque)
 }
 
 typedef struct DriveBackupState {
+    BlkActionState common;
     BlockDriverState *bs;
     BlockJob *job;
 } DriveBackupState;
@@ -1624,20 +1671,10 @@ static BlockJob *do_backup_common(BackupCommon *backup,
                                   AioContext *aio_context,
                                   JobTxn *txn, Error **errp);
 
-static void drive_backup_commit(void *opaque);
-static void drive_backup_abort(void *opaque);
-static void drive_backup_clean(void *opaque);
-TransactionActionDrv drive_backup_drv = {
-    .commit = drive_backup_commit,
-    .abort = drive_backup_abort,
-    .clean = drive_backup_clean,
-};
-
-static void drive_backup_action(DriveBackup *backup,
-                                JobTxn *block_job_txn,
-                                Transaction *tran, Error **errp)
+static void drive_backup_prepare(BlkActionState *common, Error **errp)
 {
-    DriveBackupState *state = g_new0(DriveBackupState, 1);
+    DriveBackupState *state = DO_UPCAST(DriveBackupState, common, common);
+    DriveBackup *backup;
     BlockDriverState *bs;
     BlockDriverState *target_bs;
     BlockDriverState *source = NULL;
@@ -1651,7 +1688,8 @@ static void drive_backup_action(DriveBackup *backup,
     bool set_backing_hd = false;
     int ret;
 
-    tran_add(tran, &drive_backup_drv, state);
+    assert(common->action->type == TRANSACTION_ACTION_KIND_DRIVE_BACKUP);
+    backup = common->action->u.drive_backup.data;
 
     if (!backup->has_mode) {
         backup->mode = NEW_IMAGE_MODE_ABSOLUTE_PATHS;
@@ -1743,18 +1781,15 @@ static void drive_backup_action(DriveBackup *backup,
     if (format) {
         qdict_put_str(options, "driver", format);
     }
-    aio_context_release(aio_context);
 
-    aio_context_acquire(qemu_get_aio_context());
     target_bs = bdrv_open(backup->target, NULL, options, flags, errp);
-    aio_context_release(qemu_get_aio_context());
-
     if (!target_bs) {
-        return;
+        goto out;
     }
 
     /* Honor bdrv_try_change_aio_context() context acquisition requirements. */
     old_context = bdrv_get_aio_context(target_bs);
+    aio_context_release(aio_context);
     aio_context_acquire(old_context);
 
     ret = bdrv_try_change_aio_context(target_bs, aio_context, NULL, errp);
@@ -1775,7 +1810,7 @@ static void drive_backup_action(DriveBackup *backup,
 
     state->job = do_backup_common(qapi_DriveBackup_base(backup),
                                   bs, target_bs, aio_context,
-                                  block_job_txn, errp);
+                                  common->block_job_txn, errp);
 
 unref:
     bdrv_unref(target_bs);
@@ -1783,9 +1818,9 @@ out:
     aio_context_release(aio_context);
 }
 
-static void drive_backup_commit(void *opaque)
+static void drive_backup_commit(BlkActionState *common)
 {
-    DriveBackupState *state = opaque;
+    DriveBackupState *state = DO_UPCAST(DriveBackupState, common, common);
     AioContext *aio_context;
 
     aio_context = bdrv_get_aio_context(state->bs);
@@ -1797,18 +1832,18 @@ static void drive_backup_commit(void *opaque)
     aio_context_release(aio_context);
 }
 
-static void drive_backup_abort(void *opaque)
+static void drive_backup_abort(BlkActionState *common)
 {
-    DriveBackupState *state = opaque;
+    DriveBackupState *state = DO_UPCAST(DriveBackupState, common, common);
 
     if (state->job) {
         job_cancel_sync(&state->job->job, true);
     }
 }
 
-static void drive_backup_clean(void *opaque)
+static void drive_backup_clean(BlkActionState *common)
 {
-    g_autofree DriveBackupState *state = opaque;
+    DriveBackupState *state = DO_UPCAST(DriveBackupState, common, common);
     AioContext *aio_context;
 
     if (!state->bs) {
@@ -1824,31 +1859,23 @@ static void drive_backup_clean(void *opaque)
 }
 
 typedef struct BlockdevBackupState {
+    BlkActionState common;
     BlockDriverState *bs;
     BlockJob *job;
 } BlockdevBackupState;
 
-static void blockdev_backup_commit(void *opaque);
-static void blockdev_backup_abort(void *opaque);
-static void blockdev_backup_clean(void *opaque);
-TransactionActionDrv blockdev_backup_drv = {
-    .commit = blockdev_backup_commit,
-    .abort = blockdev_backup_abort,
-    .clean = blockdev_backup_clean,
-};
-
-static void blockdev_backup_action(BlockdevBackup *backup,
-                                   JobTxn *block_job_txn,
-                                   Transaction *tran, Error **errp)
+static void blockdev_backup_prepare(BlkActionState *common, Error **errp)
 {
-    BlockdevBackupState *state = g_new0(BlockdevBackupState, 1);
+    BlockdevBackupState *state = DO_UPCAST(BlockdevBackupState, common, common);
+    BlockdevBackup *backup;
     BlockDriverState *bs;
     BlockDriverState *target_bs;
     AioContext *aio_context;
     AioContext *old_context;
     int ret;
 
-    tran_add(tran, &blockdev_backup_drv, state);
+    assert(common->action->type == TRANSACTION_ACTION_KIND_BLOCKDEV_BACKUP);
+    backup = common->action->u.blockdev_backup.data;
 
     bs = bdrv_lookup_bs(backup->device, backup->device, errp);
     if (!bs) {
@@ -1880,14 +1907,14 @@ static void blockdev_backup_action(BlockdevBackup *backup,
 
     state->job = do_backup_common(qapi_BlockdevBackup_base(backup),
                                   bs, target_bs, aio_context,
-                                  block_job_txn, errp);
+                                  common->block_job_txn, errp);
 
     aio_context_release(aio_context);
 }
 
-static void blockdev_backup_commit(void *opaque)
+static void blockdev_backup_commit(BlkActionState *common)
 {
-    BlockdevBackupState *state = opaque;
+    BlockdevBackupState *state = DO_UPCAST(BlockdevBackupState, common, common);
     AioContext *aio_context;
 
     aio_context = bdrv_get_aio_context(state->bs);
@@ -1899,18 +1926,18 @@ static void blockdev_backup_commit(void *opaque)
     aio_context_release(aio_context);
 }
 
-static void blockdev_backup_abort(void *opaque)
+static void blockdev_backup_abort(BlkActionState *common)
 {
-    BlockdevBackupState *state = opaque;
+    BlockdevBackupState *state = DO_UPCAST(BlockdevBackupState, common, common);
 
     if (state->job) {
         job_cancel_sync(&state->job->job, true);
     }
 }
 
-static void blockdev_backup_clean(void *opaque)
+static void blockdev_backup_clean(BlkActionState *common)
 {
-    g_autofree BlockdevBackupState *state = opaque;
+    BlockdevBackupState *state = DO_UPCAST(BlockdevBackupState, common, common);
     AioContext *aio_context;
 
     if (!state->bs) {
@@ -1926,26 +1953,27 @@ static void blockdev_backup_clean(void *opaque)
 }
 
 typedef struct BlockDirtyBitmapState {
+    BlkActionState common;
     BdrvDirtyBitmap *bitmap;
     BlockDriverState *bs;
     HBitmap *backup;
+    bool prepared;
     bool was_enabled;
 } BlockDirtyBitmapState;
 
-static void block_dirty_bitmap_add_abort(void *opaque);
-TransactionActionDrv block_dirty_bitmap_add_drv = {
-    .abort = block_dirty_bitmap_add_abort,
-    .clean = g_free,
-};
-
-static void block_dirty_bitmap_add_action(BlockDirtyBitmapAdd *action,
-                                          Transaction *tran, Error **errp)
+static void block_dirty_bitmap_add_prepare(BlkActionState *common,
+                                           Error **errp)
 {
     Error *local_err = NULL;
-    BlockDirtyBitmapState *state = g_new0(BlockDirtyBitmapState, 1);
+    BlockDirtyBitmapAdd *action;
+    BlockDirtyBitmapState *state = DO_UPCAST(BlockDirtyBitmapState,
+                                             common, common);
 
-    tran_add(tran, &block_dirty_bitmap_add_drv, state);
+    if (action_check_completion_mode(common, errp) < 0) {
+        return;
+    }
 
+    action = common->action->u.block_dirty_bitmap_add.data;
     /* AIO context taken and released within qmp_block_dirty_bitmap_add */
     qmp_block_dirty_bitmap_add(action->node, action->name,
                                action->has_granularity, action->granularity,
@@ -1954,37 +1982,39 @@ static void block_dirty_bitmap_add_action(BlockDirtyBitmapAdd *action,
                                &local_err);
 
     if (!local_err) {
-        state->bitmap = block_dirty_bitmap_lookup(action->node, action->name,
-                                                  NULL, &error_abort);
+        state->prepared = true;
     } else {
         error_propagate(errp, local_err);
     }
 }
 
-static void block_dirty_bitmap_add_abort(void *opaque)
+static void block_dirty_bitmap_add_abort(BlkActionState *common)
 {
-    BlockDirtyBitmapState *state = opaque;
+    BlockDirtyBitmapAdd *action;
+    BlockDirtyBitmapState *state = DO_UPCAST(BlockDirtyBitmapState,
+                                             common, common);
 
-    if (state->bitmap) {
-        bdrv_release_dirty_bitmap(state->bitmap);
+    action = common->action->u.block_dirty_bitmap_add.data;
+    /* Should not be able to fail: IF the bitmap was added via .prepare(),
+     * then the node reference and bitmap name must have been valid.
+     */
+    if (state->prepared) {
+        qmp_block_dirty_bitmap_remove(action->node, action->name, &error_abort);
     }
 }
 
-static void block_dirty_bitmap_restore(void *opaque);
-static void block_dirty_bitmap_free_backup(void *opaque);
-TransactionActionDrv block_dirty_bitmap_clear_drv = {
-    .abort = block_dirty_bitmap_restore,
-    .commit = block_dirty_bitmap_free_backup,
-    .clean = g_free,
-};
-
-static void block_dirty_bitmap_clear_action(BlockDirtyBitmap *action,
-                                            Transaction *tran, Error **errp)
+static void block_dirty_bitmap_clear_prepare(BlkActionState *common,
+                                             Error **errp)
 {
-    BlockDirtyBitmapState *state = g_new0(BlockDirtyBitmapState, 1);
+    BlockDirtyBitmapState *state = DO_UPCAST(BlockDirtyBitmapState,
+                                             common, common);
+    BlockDirtyBitmap *action;
 
-    tran_add(tran, &block_dirty_bitmap_clear_drv, state);
+    if (action_check_completion_mode(common, errp) < 0) {
+        return;
+    }
 
+    action = common->action->u.block_dirty_bitmap_clear.data;
     state->bitmap = block_dirty_bitmap_lookup(action->node,
                                               action->name,
                                               &state->bs,
@@ -2000,35 +2030,36 @@ static void block_dirty_bitmap_clear_action(BlockDirtyBitmap *action,
     bdrv_clear_dirty_bitmap(state->bitmap, &state->backup);
 }
 
-static void block_dirty_bitmap_restore(void *opaque)
+static void block_dirty_bitmap_restore(BlkActionState *common)
 {
-    BlockDirtyBitmapState *state = opaque;
+    BlockDirtyBitmapState *state = DO_UPCAST(BlockDirtyBitmapState,
+                                             common, common);
 
     if (state->backup) {
         bdrv_restore_dirty_bitmap(state->bitmap, state->backup);
     }
 }
 
-static void block_dirty_bitmap_free_backup(void *opaque)
+static void block_dirty_bitmap_free_backup(BlkActionState *common)
 {
-    BlockDirtyBitmapState *state = opaque;
+    BlockDirtyBitmapState *state = DO_UPCAST(BlockDirtyBitmapState,
+                                             common, common);
 
     hbitmap_free(state->backup);
 }
 
-static void block_dirty_bitmap_enable_abort(void *opaque);
-TransactionActionDrv block_dirty_bitmap_enable_drv = {
-    .abort = block_dirty_bitmap_enable_abort,
-    .clean = g_free,
-};
-
-static void block_dirty_bitmap_enable_action(BlockDirtyBitmap *action,
-                                             Transaction *tran, Error **errp)
+static void block_dirty_bitmap_enable_prepare(BlkActionState *common,
+                                              Error **errp)
 {
-    BlockDirtyBitmapState *state = g_new0(BlockDirtyBitmapState, 1);
+    BlockDirtyBitmap *action;
+    BlockDirtyBitmapState *state = DO_UPCAST(BlockDirtyBitmapState,
+                                             common, common);
 
-    tran_add(tran, &block_dirty_bitmap_enable_drv, state);
+    if (action_check_completion_mode(common, errp) < 0) {
+        return;
+    }
 
+    action = common->action->u.block_dirty_bitmap_enable.data;
     state->bitmap = block_dirty_bitmap_lookup(action->node,
                                               action->name,
                                               NULL,
@@ -2045,28 +2076,28 @@ static void block_dirty_bitmap_enable_action(BlockDirtyBitmap *action,
     bdrv_enable_dirty_bitmap(state->bitmap);
 }
 
-static void block_dirty_bitmap_enable_abort(void *opaque)
+static void block_dirty_bitmap_enable_abort(BlkActionState *common)
 {
-    BlockDirtyBitmapState *state = opaque;
+    BlockDirtyBitmapState *state = DO_UPCAST(BlockDirtyBitmapState,
+                                             common, common);
 
     if (!state->was_enabled) {
         bdrv_disable_dirty_bitmap(state->bitmap);
     }
 }
 
-static void block_dirty_bitmap_disable_abort(void *opaque);
-TransactionActionDrv block_dirty_bitmap_disable_drv = {
-    .abort = block_dirty_bitmap_disable_abort,
-    .clean = g_free,
-};
-
-static void block_dirty_bitmap_disable_action(BlockDirtyBitmap *action,
-                                              Transaction *tran, Error **errp)
+static void block_dirty_bitmap_disable_prepare(BlkActionState *common,
+                                               Error **errp)
 {
-    BlockDirtyBitmapState *state = g_new0(BlockDirtyBitmapState, 1);
+    BlockDirtyBitmap *action;
+    BlockDirtyBitmapState *state = DO_UPCAST(BlockDirtyBitmapState,
+                                             common, common);
 
-    tran_add(tran, &block_dirty_bitmap_disable_drv, state);
+    if (action_check_completion_mode(common, errp) < 0) {
+        return;
+    }
 
+    action = common->action->u.block_dirty_bitmap_disable.data;
     state->bitmap = block_dirty_bitmap_lookup(action->node,
                                               action->name,
                                               NULL,
@@ -2083,48 +2114,46 @@ static void block_dirty_bitmap_disable_action(BlockDirtyBitmap *action,
     bdrv_disable_dirty_bitmap(state->bitmap);
 }
 
-static void block_dirty_bitmap_disable_abort(void *opaque)
+static void block_dirty_bitmap_disable_abort(BlkActionState *common)
 {
-    BlockDirtyBitmapState *state = opaque;
+    BlockDirtyBitmapState *state = DO_UPCAST(BlockDirtyBitmapState,
+                                             common, common);
 
     if (state->was_enabled) {
         bdrv_enable_dirty_bitmap(state->bitmap);
     }
 }
 
-TransactionActionDrv block_dirty_bitmap_merge_drv = {
-    .commit = block_dirty_bitmap_free_backup,
-    .abort = block_dirty_bitmap_restore,
-    .clean = g_free,
-};
-
-static void block_dirty_bitmap_merge_action(BlockDirtyBitmapMerge *action,
-                                            Transaction *tran, Error **errp)
+static void block_dirty_bitmap_merge_prepare(BlkActionState *common,
+                                             Error **errp)
 {
-    BlockDirtyBitmapState *state = g_new0(BlockDirtyBitmapState, 1);
+    BlockDirtyBitmapMerge *action;
+    BlockDirtyBitmapState *state = DO_UPCAST(BlockDirtyBitmapState,
+                                             common, common);
 
-    tran_add(tran, &block_dirty_bitmap_merge_drv, state);
+    if (action_check_completion_mode(common, errp) < 0) {
+        return;
+    }
+
+    action = common->action->u.block_dirty_bitmap_merge.data;
 
     state->bitmap = block_dirty_bitmap_merge(action->node, action->target,
                                              action->bitmaps, &state->backup,
                                              errp);
 }
 
-static void block_dirty_bitmap_remove_commit(void *opaque);
-static void block_dirty_bitmap_remove_abort(void *opaque);
-TransactionActionDrv block_dirty_bitmap_remove_drv = {
-    .commit = block_dirty_bitmap_remove_commit,
-    .abort = block_dirty_bitmap_remove_abort,
-    .clean = g_free,
-};
-
-static void block_dirty_bitmap_remove_action(BlockDirtyBitmap *action,
-                                             Transaction *tran, Error **errp)
+static void block_dirty_bitmap_remove_prepare(BlkActionState *common,
+                                              Error **errp)
 {
-    BlockDirtyBitmapState *state = g_new0(BlockDirtyBitmapState, 1);
+    BlockDirtyBitmap *action;
+    BlockDirtyBitmapState *state = DO_UPCAST(BlockDirtyBitmapState,
+                                             common, common);
 
-    tran_add(tran, &block_dirty_bitmap_remove_drv, state);
+    if (action_check_completion_mode(common, errp) < 0) {
+        return;
+    }
 
+    action = common->action->u.block_dirty_bitmap_remove.data;
 
     state->bitmap = block_dirty_bitmap_remove(action->node, action->name,
                                               false, &state->bs, errp);
@@ -2134,9 +2163,10 @@ static void block_dirty_bitmap_remove_action(BlockDirtyBitmap *action,
     }
 }
 
-static void block_dirty_bitmap_remove_abort(void *opaque)
+static void block_dirty_bitmap_remove_abort(BlkActionState *common)
 {
-    BlockDirtyBitmapState *state = opaque;
+    BlockDirtyBitmapState *state = DO_UPCAST(BlockDirtyBitmapState,
+                                             common, common);
 
     if (state->bitmap) {
         bdrv_dirty_bitmap_skip_store(state->bitmap, false);
@@ -2144,90 +2174,124 @@ static void block_dirty_bitmap_remove_abort(void *opaque)
     }
 }
 
-static void block_dirty_bitmap_remove_commit(void *opaque)
+static void block_dirty_bitmap_remove_commit(BlkActionState *common)
 {
-    BlockDirtyBitmapState *state = opaque;
+    BlockDirtyBitmapState *state = DO_UPCAST(BlockDirtyBitmapState,
+                                             common, common);
 
     bdrv_dirty_bitmap_set_busy(state->bitmap, false);
     bdrv_release_dirty_bitmap(state->bitmap);
 }
 
-static void abort_commit(void *opaque);
-TransactionActionDrv abort_drv = {
-    .commit = abort_commit,
-};
-
-static void abort_action(Transaction *tran, Error **errp)
+static void abort_prepare(BlkActionState *common, Error **errp)
 {
-    tran_add(tran, &abort_drv, NULL);
     error_setg(errp, "Transaction aborted using Abort action");
 }
 
-static void abort_commit(void *opaque)
+static void abort_commit(BlkActionState *common)
 {
     g_assert_not_reached(); /* this action never succeeds */
 }
 
-static void transaction_action(TransactionAction *act, JobTxn *block_job_txn,
-                               Transaction *tran, Error **errp)
-{
-    switch (act->type) {
-    case TRANSACTION_ACTION_KIND_BLOCKDEV_SNAPSHOT:
-    case TRANSACTION_ACTION_KIND_BLOCKDEV_SNAPSHOT_SYNC:
-        external_snapshot_action(act, tran, errp);
-        return;
-    case TRANSACTION_ACTION_KIND_DRIVE_BACKUP:
-        drive_backup_action(act->u.drive_backup.data,
-                            block_job_txn, tran, errp);
-        return;
-    case TRANSACTION_ACTION_KIND_BLOCKDEV_BACKUP:
-        blockdev_backup_action(act->u.blockdev_backup.data,
-                               block_job_txn, tran, errp);
-        return;
-    case TRANSACTION_ACTION_KIND_ABORT:
-        abort_action(tran, errp);
-        return;
-    case TRANSACTION_ACTION_KIND_BLOCKDEV_SNAPSHOT_INTERNAL_SYNC:
-        internal_snapshot_action(act->u.blockdev_snapshot_internal_sync.data,
-                                 tran, errp);
-        return;
-    case TRANSACTION_ACTION_KIND_BLOCK_DIRTY_BITMAP_ADD:
-        block_dirty_bitmap_add_action(act->u.block_dirty_bitmap_add.data,
-                                      tran, errp);
-        return;
-    case TRANSACTION_ACTION_KIND_BLOCK_DIRTY_BITMAP_CLEAR:
-        block_dirty_bitmap_clear_action(act->u.block_dirty_bitmap_clear.data,
-                                        tran, errp);
-        return;
-    case TRANSACTION_ACTION_KIND_BLOCK_DIRTY_BITMAP_ENABLE:
-        block_dirty_bitmap_enable_action(act->u.block_dirty_bitmap_enable.data,
-                                         tran, errp);
-        return;
-    case TRANSACTION_ACTION_KIND_BLOCK_DIRTY_BITMAP_DISABLE:
-        block_dirty_bitmap_disable_action(
-                act->u.block_dirty_bitmap_disable.data, tran, errp);
-        return;
-    case TRANSACTION_ACTION_KIND_BLOCK_DIRTY_BITMAP_MERGE:
-        block_dirty_bitmap_merge_action(act->u.block_dirty_bitmap_merge.data,
-                                        tran, errp);
-        return;
-    case TRANSACTION_ACTION_KIND_BLOCK_DIRTY_BITMAP_REMOVE:
-        block_dirty_bitmap_remove_action(act->u.block_dirty_bitmap_remove.data,
-                                         tran, errp);
-        return;
-    /*
-     * Where are transactions for MIRROR, COMMIT and STREAM?
+static const BlkActionOps actions[] = {
+    [TRANSACTION_ACTION_KIND_BLOCKDEV_SNAPSHOT] = {
+        .instance_size = sizeof(ExternalSnapshotState),
+        .prepare  = external_snapshot_prepare,
+        .commit   = external_snapshot_commit,
+        .abort = external_snapshot_abort,
+        .clean = external_snapshot_clean,
+    },
+    [TRANSACTION_ACTION_KIND_BLOCKDEV_SNAPSHOT_SYNC] = {
+        .instance_size = sizeof(ExternalSnapshotState),
+        .prepare  = external_snapshot_prepare,
+        .commit   = external_snapshot_commit,
+        .abort = external_snapshot_abort,
+        .clean = external_snapshot_clean,
+    },
+    [TRANSACTION_ACTION_KIND_DRIVE_BACKUP] = {
+        .instance_size = sizeof(DriveBackupState),
+        .prepare = drive_backup_prepare,
+        .commit = drive_backup_commit,
+        .abort = drive_backup_abort,
+        .clean = drive_backup_clean,
+    },
+    [TRANSACTION_ACTION_KIND_BLOCKDEV_BACKUP] = {
+        .instance_size = sizeof(BlockdevBackupState),
+        .prepare = blockdev_backup_prepare,
+        .commit = blockdev_backup_commit,
+        .abort = blockdev_backup_abort,
+        .clean = blockdev_backup_clean,
+    },
+    [TRANSACTION_ACTION_KIND_ABORT] = {
+        .instance_size = sizeof(BlkActionState),
+        .prepare = abort_prepare,
+        .commit = abort_commit,
+    },
+    [TRANSACTION_ACTION_KIND_BLOCKDEV_SNAPSHOT_INTERNAL_SYNC] = {
+        .instance_size = sizeof(InternalSnapshotState),
+        .prepare  = internal_snapshot_prepare,
+        .abort = internal_snapshot_abort,
+        .clean = internal_snapshot_clean,
+    },
+    [TRANSACTION_ACTION_KIND_BLOCK_DIRTY_BITMAP_ADD] = {
+        .instance_size = sizeof(BlockDirtyBitmapState),
+        .prepare = block_dirty_bitmap_add_prepare,
+        .abort = block_dirty_bitmap_add_abort,
+    },
+    [TRANSACTION_ACTION_KIND_BLOCK_DIRTY_BITMAP_CLEAR] = {
+        .instance_size = sizeof(BlockDirtyBitmapState),
+        .prepare = block_dirty_bitmap_clear_prepare,
+        .commit = block_dirty_bitmap_free_backup,
+        .abort = block_dirty_bitmap_restore,
+    },
+    [TRANSACTION_ACTION_KIND_BLOCK_DIRTY_BITMAP_ENABLE] = {
+        .instance_size = sizeof(BlockDirtyBitmapState),
+        .prepare = block_dirty_bitmap_enable_prepare,
+        .abort = block_dirty_bitmap_enable_abort,
+    },
+    [TRANSACTION_ACTION_KIND_BLOCK_DIRTY_BITMAP_DISABLE] = {
+        .instance_size = sizeof(BlockDirtyBitmapState),
+        .prepare = block_dirty_bitmap_disable_prepare,
+        .abort = block_dirty_bitmap_disable_abort,
+    },
+    [TRANSACTION_ACTION_KIND_BLOCK_DIRTY_BITMAP_MERGE] = {
+        .instance_size = sizeof(BlockDirtyBitmapState),
+        .prepare = block_dirty_bitmap_merge_prepare,
+        .commit = block_dirty_bitmap_free_backup,
+        .abort = block_dirty_bitmap_restore,
+    },
+    [TRANSACTION_ACTION_KIND_BLOCK_DIRTY_BITMAP_REMOVE] = {
+        .instance_size = sizeof(BlockDirtyBitmapState),
+        .prepare = block_dirty_bitmap_remove_prepare,
+        .commit = block_dirty_bitmap_remove_commit,
+        .abort = block_dirty_bitmap_remove_abort,
+    },
+    /* Where are transactions for MIRROR, COMMIT and STREAM?
      * Although these blockjobs use transaction callbacks like the backup job,
      * these jobs do not necessarily adhere to transaction semantics.
      * These jobs may not fully undo all of their actions on abort, nor do they
      * necessarily work in transactions with more than one job in them.
      */
-    case TRANSACTION_ACTION_KIND__MAX:
-    default:
-        g_assert_not_reached();
-    };
-}
+};
 
+/**
+ * Allocate a TransactionProperties structure if necessary, and fill
+ * that structure with desired defaults if they are unset.
+ */
+static TransactionProperties *get_transaction_properties(
+    TransactionProperties *props)
+{
+    if (!props) {
+        props = g_new0(TransactionProperties, 1);
+    }
+
+    if (!props->has_completion_mode) {
+        props->has_completion_mode = true;
+        props->completion_mode = ACTION_COMPLETION_MODE_INDIVIDUAL;
+    }
+
+    return props;
+}
 
 /*
  * 'Atomic' group operations.  The operations are performed as a set, and if
@@ -2235,65 +2299,85 @@ static void transaction_action(TransactionAction *act, JobTxn *block_job_txn,
  *
  * Always run under BQL.
  */
-void qmp_transaction(TransactionActionList *actions,
-                     struct TransactionProperties *properties,
+void qmp_transaction(TransactionActionList *dev_list,
+                     struct TransactionProperties *props,
                      Error **errp)
 {
-    TransactionActionList *act;
+    TransactionActionList *dev_entry = dev_list;
+    bool has_props = !!props;
     JobTxn *block_job_txn = NULL;
+    BlkActionState *state, *next;
     Error *local_err = NULL;
-    Transaction *tran;
-    ActionCompletionMode comp_mode =
-        properties ? properties->completion_mode :
-        ACTION_COMPLETION_MODE_INDIVIDUAL;
 
     GLOBAL_STATE_CODE();
+
+    QTAILQ_HEAD(, BlkActionState) snap_bdrv_states;
+    QTAILQ_INIT(&snap_bdrv_states);
 
     /* Does this transaction get canceled as a group on failure?
      * If not, we don't really need to make a JobTxn.
      */
-    if (comp_mode != ACTION_COMPLETION_MODE_INDIVIDUAL) {
-        for (act = actions; act; act = act->next) {
-            TransactionActionKind type = act->value->type;
-
-            if (type != TRANSACTION_ACTION_KIND_BLOCKDEV_BACKUP &&
-                type != TRANSACTION_ACTION_KIND_DRIVE_BACKUP)
-            {
-                error_setg(errp,
-                           "Action '%s' does not support transaction property "
-                           "completion-mode = %s",
-                           TransactionActionKind_str(type),
-                           ActionCompletionMode_str(comp_mode));
-                return;
-            }
-        }
-
+    props = get_transaction_properties(props);
+    if (props->completion_mode != ACTION_COMPLETION_MODE_INDIVIDUAL) {
         block_job_txn = job_txn_new();
     }
 
     /* drain all i/o before any operations */
     bdrv_drain_all();
 
-    tran = tran_new();
-
     /* We don't do anything in this loop that commits us to the operations */
-    for (act = actions; act; act = act->next) {
-        transaction_action(act->value, block_job_txn, tran, &local_err);
+    while (NULL != dev_entry) {
+        TransactionAction *dev_info = NULL;
+        const BlkActionOps *ops;
+
+        dev_info = dev_entry->value;
+        dev_entry = dev_entry->next;
+
+        assert(dev_info->type < ARRAY_SIZE(actions));
+
+        ops = &actions[dev_info->type];
+        assert(ops->instance_size > 0);
+
+        state = g_malloc0(ops->instance_size);
+        state->ops = ops;
+        state->action = dev_info;
+        state->block_job_txn = block_job_txn;
+        state->txn_props = props;
+        QTAILQ_INSERT_TAIL(&snap_bdrv_states, state, entry);
+
+        state->ops->prepare(state, &local_err);
         if (local_err) {
             error_propagate(errp, local_err);
             goto delete_and_fail;
         }
     }
 
-    tran_commit(tran);
+    QTAILQ_FOREACH(state, &snap_bdrv_states, entry) {
+        if (state->ops->commit) {
+            state->ops->commit(state);
+        }
+    }
 
     /* success */
     goto exit;
 
 delete_and_fail:
     /* failure, and it is all-or-none; roll back all operations */
-    tran_abort(tran);
+    QTAILQ_FOREACH_REVERSE(state, &snap_bdrv_states, entry) {
+        if (state->ops->abort) {
+            state->ops->abort(state);
+        }
+    }
 exit:
+    QTAILQ_FOREACH_SAFE(state, &snap_bdrv_states, entry, next) {
+        if (state->ops->clean) {
+            state->ops->clean(state);
+        }
+        g_free(state);
+    }
+    if (!has_props) {
+        qapi_free_TransactionProperties(props);
+    }
     job_txn_unref(block_job_txn);
 }
 
@@ -2346,7 +2430,7 @@ void coroutine_fn qmp_block_resize(const char *device, const char *node_name,
         return;
     }
 
-    blk = blk_co_new_with_bs(bs, BLK_PERM_RESIZE, BLK_PERM_ALL, errp);
+    blk = blk_new_with_bs(bs, BLK_PERM_RESIZE, BLK_PERM_ALL, errp);
     if (!blk) {
         return;
     }
@@ -2361,7 +2445,7 @@ void coroutine_fn qmp_block_resize(const char *device, const char *node_name,
 
     bdrv_co_lock(bs);
     bdrv_drained_end(bs);
-    blk_co_unref(blk);
+    blk_unref(blk);
     bdrv_co_unlock(bs);
 }
 
@@ -2867,9 +2951,6 @@ static void blockdev_mirror_common(const char *job_id, BlockDriverState *bs,
     BlockDriverState *unfiltered_bs;
     int job_flags = JOB_DEFAULT;
 
-    GLOBAL_STATE_CODE();
-    GRAPH_RDLOCK_GUARD_MAINLOOP();
-
     if (!has_speed) {
         speed = 0;
     }
@@ -3080,17 +3161,13 @@ void qmp_drive_mirror(DriveMirror *arg, Error **errp)
     if (format) {
         qdict_put_str(options, "driver", format);
     }
-    aio_context_release(aio_context);
 
     /* Mirroring takes care of copy-on-write using the source's backing
      * file.
      */
-    aio_context_acquire(qemu_get_aio_context());
     target_bs = bdrv_open(arg->target, NULL, options, flags, errp);
-    aio_context_release(qemu_get_aio_context());
-
     if (!target_bs) {
-        return;
+        goto out;
     }
 
     zero_target = (arg->sync == MIRROR_SYNC_MODE_FULL &&
@@ -3100,6 +3177,7 @@ void qmp_drive_mirror(DriveMirror *arg, Error **errp)
 
     /* Honor bdrv_try_change_aio_context() context acquisition requirements. */
     old_context = bdrv_get_aio_context(target_bs);
+    aio_context_release(aio_context);
     aio_context_acquire(old_context);
 
     ret = bdrv_try_change_aio_context(target_bs, aio_context, NULL, errp);

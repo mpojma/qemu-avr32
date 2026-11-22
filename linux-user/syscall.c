@@ -309,16 +309,16 @@ _syscall0(int, sys_gettid)
 #endif
 
 #if defined(TARGET_NR_getdents) && defined(EMULATE_GETDENTS_WITH_GETDENTS)
-_syscall3(int, sys_getdents, unsigned int, fd, struct linux_dirent *, dirp, unsigned int, count);
+_syscall3(int, sys_getdents, uint, fd, struct linux_dirent *, dirp, uint, count);
 #endif
 #if (defined(TARGET_NR_getdents) && \
       !defined(EMULATE_GETDENTS_WITH_GETDENTS)) || \
     (defined(TARGET_NR_getdents64) && defined(__NR_getdents64))
-_syscall3(int, sys_getdents64, unsigned int, fd, struct linux_dirent64 *, dirp, unsigned int, count);
+_syscall3(int, sys_getdents64, uint, fd, struct linux_dirent64 *, dirp, uint, count);
 #endif
 #if defined(TARGET_NR__llseek) && defined(__NR_llseek)
-_syscall5(int, _llseek,  unsigned int,  fd, unsigned long, hi, unsigned long, lo,
-          loff_t *, res, unsigned int, wh);
+_syscall5(int, _llseek,  uint,  fd, ulong, hi, ulong, lo,
+          loff_t *, res, uint, wh);
 #endif
 _syscall3(int, sys_rt_sigqueueinfo, pid_t, pid, int, sig, siginfo_t *, uinfo)
 _syscall4(int, sys_rt_tgsigqueueinfo, pid_t, pid, pid_t, tid, int, sig,
@@ -659,7 +659,6 @@ safe_syscall4(pid_t, wait4, pid_t, pid, int *, status, int, options, \
 #endif
 safe_syscall5(int, waitid, idtype_t, idtype, id_t, id, siginfo_t *, infop, \
               int, options, struct rusage *, rusage)
-safe_syscall3(int, execve, const char *, filename, char **, argv, char **, envp)
 safe_syscall5(int, execveat, int, dirfd, const char *, filename,
               char **, argv, char **, envp, int, flags)
 #if defined(TARGET_NR_select) || defined(TARGET_NR__newselect) || \
@@ -801,13 +800,12 @@ static inline int host_to_target_sock_type(int host_type)
     return target_type;
 }
 
-static abi_ulong target_brk, initial_target_brk;
+static abi_ulong target_brk;
 static abi_ulong brk_page;
 
 void target_set_brk(abi_ulong new_brk)
 {
-    target_brk = TARGET_PAGE_ALIGN(new_brk);
-    initial_target_brk = target_brk;
+    target_brk = new_brk;
     brk_page = HOST_PAGE_ALIGN(target_brk);
 }
 
@@ -825,18 +823,15 @@ abi_long do_brk(abi_ulong brk_val)
         return target_brk;
     }
 
-    /* do not allow to shrink below initial brk value */
-    if (brk_val < initial_target_brk) {
-        brk_val = initial_target_brk;
-    }
-
     new_brk = TARGET_PAGE_ALIGN(brk_val);
     new_host_brk_page = HOST_PAGE_ALIGN(brk_val);
 
     /* brk_val and old target_brk might be on the same page */
     if (new_brk == TARGET_PAGE_ALIGN(target_brk)) {
-        /* empty remaining bytes in (possibly larger) host page */
-        memset(g2h_untagged(new_brk), 0, new_host_brk_page - new_brk);
+        if (brk_val > target_brk) {
+            /* empty remaining bytes in (possibly larger) host page */
+            memset(g2h_untagged(target_brk), 0, new_host_brk_page - target_brk);
+        }
         target_brk = brk_val;
         return target_brk;
     }
@@ -844,7 +839,7 @@ abi_long do_brk(abi_ulong brk_val)
     /* Release heap if necesary */
     if (new_brk < target_brk) {
         /* empty remaining bytes in (possibly larger) host page */
-        memset(g2h_untagged(new_brk), 0, new_host_brk_page - new_brk);
+        memset(g2h_untagged(brk_val), 0, new_host_brk_page - brk_val);
 
         /* free unused host pages and set new brk_page */
         target_munmap(new_host_brk_page, brk_page - new_host_brk_page);
@@ -860,13 +855,12 @@ abi_long do_brk(abi_ulong brk_val)
      * itself); instead we treat "mapped but at wrong address" as
      * a failure and unmap again.
      */
-    if (new_host_brk_page > brk_page) {
-        new_alloc_size = new_host_brk_page - brk_page;
+    new_alloc_size = new_host_brk_page - brk_page;
+    if (new_alloc_size) {
         mapped_addr = get_errno(target_mmap(brk_page, new_alloc_size,
                                         PROT_READ|PROT_WRITE,
                                         MAP_ANON|MAP_PRIVATE, 0, 0));
     } else {
-        new_alloc_size = 0;
         mapped_addr = brk_page;
     }
 
@@ -878,7 +872,7 @@ abi_long do_brk(abi_ulong brk_val)
          * come from the remaining part of the previous page: it may
          * contains garbage data due to a previous heap usage (grown
          * then shrunken).  */
-        memset(g2h_untagged(brk_page), 0, HOST_PAGE_ALIGN(brk_page) - brk_page);
+        memset(g2h_untagged(target_brk), 0, brk_page - target_brk);
 
         target_brk = brk_val;
         brk_page = new_host_brk_page;
@@ -3446,17 +3440,7 @@ static abi_long do_accept4(int fd, abi_ulong target_addr,
     abi_long ret;
     int host_flags;
 
-    if (flags & ~(TARGET_SOCK_CLOEXEC | TARGET_SOCK_NONBLOCK)) {
-        return -TARGET_EINVAL;
-    }
-
-    host_flags = 0;
-    if (flags & TARGET_SOCK_NONBLOCK) {
-        host_flags |= SOCK_NONBLOCK;
-    }
-    if (flags & TARGET_SOCK_CLOEXEC) {
-        host_flags |= SOCK_CLOEXEC;
-    }
+    host_flags = target_to_host_bitmask(flags, fcntl_flags_tbl);
 
     if (target_addr == 0) {
         return get_errno(safe_accept4(fd, NULL, NULL, host_flags));
@@ -4544,14 +4528,14 @@ static inline abi_ulong target_shmlba(CPUArchState *cpu_env)
 }
 #endif
 
-static abi_ulong do_shmat(CPUArchState *cpu_env, int shmid,
-                          abi_ulong shmaddr, int shmflg)
+static inline abi_ulong do_shmat(CPUArchState *cpu_env,
+                                 int shmid, abi_ulong shmaddr, int shmflg)
 {
     CPUState *cpu = env_cpu(cpu_env);
-    abi_ulong raddr;
+    abi_long raddr;
     void *host_raddr;
     struct shmid_ds shm_info;
-    int i, ret;
+    int i,ret;
     abi_ulong shmlba;
 
     /* shmat pointers are always untagged */
@@ -4607,9 +4591,9 @@ static abi_ulong do_shmat(CPUArchState *cpu_env, int shmid,
 
     if (host_raddr == (void *)-1) {
         mmap_unlock();
-        return get_errno((intptr_t)host_raddr);
+        return get_errno((long)host_raddr);
     }
-    raddr = h2g((uintptr_t)host_raddr);
+    raddr=h2g((unsigned long)host_raddr);
 
     page_set_flags(raddr, raddr + shm_info.shm_segsz - 1,
                    PAGE_VALID | PAGE_RESET | PAGE_READ |
@@ -4626,6 +4610,7 @@ static abi_ulong do_shmat(CPUArchState *cpu_env, int shmid,
 
     mmap_unlock();
     return raddr;
+
 }
 
 static inline abi_long do_shmdt(abi_ulong shmaddr)
@@ -5762,7 +5747,7 @@ static abi_long do_ioctl(int fd, int cmd, abi_long arg)
         if (ie->target_cmd == 0) {
             qemu_log_mask(
                 LOG_UNIMP, "Unsupported ioctl: cmd=0x%04lx\n", (long)cmd);
-            return -TARGET_ENOTTY;
+            return -TARGET_ENOSYS;
         }
         if (ie->target_cmd == cmd)
             break;
@@ -5774,7 +5759,7 @@ static abi_long do_ioctl(int fd, int cmd, abi_long arg)
     } else if (!ie->host_cmd) {
         /* Some architectures define BSD ioctls in their headers
            that are not implemented in Linux.  */
-        return -TARGET_ENOTTY;
+        return -TARGET_ENOSYS;
     }
 
     switch(arg_type[0]) {
@@ -5832,7 +5817,7 @@ static abi_long do_ioctl(int fd, int cmd, abi_long arg)
         qemu_log_mask(LOG_UNIMP,
                       "Unsupported ioctl type: cmd=0x%04lx type=%d\n",
                       (long)cmd, arg_type[0]);
-        ret = -TARGET_ENOTTY;
+        ret = -TARGET_ENOSYS;
         break;
     }
     return ret;
@@ -6017,19 +6002,9 @@ static const StructEntry struct_termios_def = {
     .print = print_termios,
 };
 
-/* If the host does not provide these bits, they may be safely discarded. */
-#ifndef MAP_SYNC
-#define MAP_SYNC 0
-#endif
-#ifndef MAP_UNINITIALIZED
-#define MAP_UNINITIALIZED 0
-#endif
-
 static const bitmask_transtbl mmap_flags_tbl[] = {
-    { TARGET_MAP_TYPE, TARGET_MAP_SHARED, MAP_TYPE, MAP_SHARED },
-    { TARGET_MAP_TYPE, TARGET_MAP_PRIVATE, MAP_TYPE, MAP_PRIVATE },
-    { TARGET_MAP_TYPE, TARGET_MAP_SHARED_VALIDATE,
-      MAP_TYPE, MAP_SHARED_VALIDATE },
+    { TARGET_MAP_SHARED, TARGET_MAP_SHARED, MAP_SHARED, MAP_SHARED },
+    { TARGET_MAP_PRIVATE, TARGET_MAP_PRIVATE, MAP_PRIVATE, MAP_PRIVATE },
     { TARGET_MAP_FIXED, TARGET_MAP_FIXED, MAP_FIXED, MAP_FIXED },
     { TARGET_MAP_ANONYMOUS, TARGET_MAP_ANONYMOUS,
       MAP_ANONYMOUS, MAP_ANONYMOUS },
@@ -6047,13 +6022,6 @@ static const bitmask_transtbl mmap_flags_tbl[] = {
        Recognize it for the target insofar as we do not want to pass
        it through to the host.  */
     { TARGET_MAP_STACK, TARGET_MAP_STACK, 0, 0 },
-    { TARGET_MAP_SYNC, TARGET_MAP_SYNC, MAP_SYNC, MAP_SYNC },
-    { TARGET_MAP_NONBLOCK, TARGET_MAP_NONBLOCK, MAP_NONBLOCK, MAP_NONBLOCK },
-    { TARGET_MAP_POPULATE, TARGET_MAP_POPULATE, MAP_POPULATE, MAP_POPULATE },
-    { TARGET_MAP_FIXED_NOREPLACE, TARGET_MAP_FIXED_NOREPLACE,
-      MAP_FIXED_NOREPLACE, MAP_FIXED_NOREPLACE },
-    { TARGET_MAP_UNINITIALIZED, TARGET_MAP_UNINITIALIZED,
-      MAP_UNINITIALIZED, MAP_UNINITIALIZED },
     { 0, 0, 0, 0 }
 };
 
@@ -7164,10 +7132,6 @@ static abi_long do_fcntl(int fd, int cmd, abi_ulong arg)
         ret = get_errno(safe_fcntl(fd, host_cmd, arg));
         if (ret >= 0) {
             ret = host_to_target_bitmask(ret, fcntl_flags_tbl);
-            /* tell 32-bit guests it uses largefile on 64-bit hosts: */
-            if (O_LARGEFILE == 0 && HOST_LONG_BITS == 64) {
-                ret |= TARGET_O_LARGEFILE;
-            }
         }
         break;
 
@@ -8078,36 +8042,7 @@ static int open_self_cmdline(CPUArchState *cpu_env, int fd)
     return 0;
 }
 
-static void show_smaps(int fd, unsigned long size)
-{
-    unsigned long page_size_kb = TARGET_PAGE_SIZE >> 10;
-    unsigned long size_kb = size >> 10;
-
-    dprintf(fd, "Size:                  %lu kB\n"
-                "KernelPageSize:        %lu kB\n"
-                "MMUPageSize:           %lu kB\n"
-                "Rss:                   0 kB\n"
-                "Pss:                   0 kB\n"
-                "Pss_Dirty:             0 kB\n"
-                "Shared_Clean:          0 kB\n"
-                "Shared_Dirty:          0 kB\n"
-                "Private_Clean:         0 kB\n"
-                "Private_Dirty:         0 kB\n"
-                "Referenced:            0 kB\n"
-                "Anonymous:             0 kB\n"
-                "LazyFree:              0 kB\n"
-                "AnonHugePages:         0 kB\n"
-                "ShmemPmdMapped:        0 kB\n"
-                "FilePmdMapped:         0 kB\n"
-                "Shared_Hugetlb:        0 kB\n"
-                "Private_Hugetlb:       0 kB\n"
-                "Swap:                  0 kB\n"
-                "SwapPss:               0 kB\n"
-                "Locked:                0 kB\n"
-                "THPeligible:    0\n", size_kb, page_size_kb, page_size_kb);
-}
-
-static int open_self_maps_1(CPUArchState *cpu_env, int fd, bool smaps)
+static int open_self_maps(CPUArchState *cpu_env, int fd)
 {
     CPUState *cpu = env_cpu(cpu_env);
     TaskState *ts = cpu->opaque;
@@ -8127,7 +8062,7 @@ static int open_self_maps_1(CPUArchState *cpu_env, int fd, bool smaps)
             max = h2g_valid(max - 1) ?
                 max : (uintptr_t) g2h_untagged(GUEST_ADDR_MAX) + 1;
 
-            if (!page_check_range(h2g(min), max - min, flags)) {
+            if (page_check_range(h2g(min), max - min, flags) == -1) {
                 continue;
             }
 
@@ -8154,18 +8089,6 @@ static int open_self_maps_1(CPUArchState *cpu_env, int fd, bool smaps)
             } else {
                 dprintf(fd, "\n");
             }
-            if (smaps) {
-                show_smaps(fd, max - min);
-                dprintf(fd, "VmFlags:%s%s%s%s%s%s%s%s\n",
-                        (flags & PAGE_READ) ? " rd" : "",
-                        (flags & PAGE_WRITE_ORG) ? " wr" : "",
-                        (flags & PAGE_EXEC) ? " ex" : "",
-                        e->is_priv ? "" : " sh",
-                        (flags & PAGE_READ) ? " mr" : "",
-                        (flags & PAGE_WRITE_ORG) ? " mw" : "",
-                        (flags & PAGE_EXEC) ? " me" : "",
-                        e->is_priv ? "" : " ms");
-            }
         }
     }
 
@@ -8180,23 +8103,9 @@ static int open_self_maps_1(CPUArchState *cpu_env, int fd, bool smaps)
                     " --xp 00000000 00:00 0",
                     TARGET_VSYSCALL_PAGE, TARGET_VSYSCALL_PAGE + TARGET_PAGE_SIZE);
     dprintf(fd, "%*s%s\n", 73 - count, "",  "[vsyscall]");
-    if (smaps) {
-        show_smaps(fd, TARGET_PAGE_SIZE);
-        dprintf(fd, "VmFlags: ex\n");
-    }
 #endif
 
     return 0;
-}
-
-static int open_self_maps(CPUArchState *cpu_env, int fd)
-{
-    return open_self_maps_1(cpu_env, fd, false);
-}
-
-static int open_self_smaps(CPUArchState *cpu_env, int fd)
-{
-    return open_self_maps_1(cpu_env, fd, true);
 }
 
 static int open_self_stat(CPUArchState *cpu_env, int fd)
@@ -8322,8 +8231,7 @@ void target_exception_dump(CPUArchState *env, const char *fmt, int code)
 }
 
 #if HOST_BIG_ENDIAN != TARGET_BIG_ENDIAN || \
-    defined(TARGET_SPARC) || defined(TARGET_M68K) || defined(TARGET_HPPA) || \
-    defined(TARGET_RISCV) || defined(TARGET_S390X)
+    defined(TARGET_SPARC) || defined(TARGET_M68K) || defined(TARGET_HPPA)
 static int is_proc(const char *filename, const char *entry)
 {
     return strcmp(filename, entry) == 0;
@@ -8401,136 +8309,6 @@ static int open_cpuinfo(CPUArchState *cpu_env, int fd)
 }
 #endif
 
-#if defined(TARGET_RISCV)
-static int open_cpuinfo(CPUArchState *cpu_env, int fd)
-{
-    int i;
-    int num_cpus = sysconf(_SC_NPROCESSORS_ONLN);
-    RISCVCPU *cpu = env_archcpu(cpu_env);
-    const RISCVCPUConfig *cfg = riscv_cpu_cfg((CPURISCVState *) cpu_env);
-    char *isa_string = riscv_isa_string(cpu);
-    const char *mmu;
-
-    if (cfg->mmu) {
-        mmu = (cpu_env->xl == MXL_RV32) ? "sv32"  : "sv48";
-    } else {
-        mmu = "none";
-    }
-
-    for (i = 0; i < num_cpus; i++) {
-        dprintf(fd, "processor\t: %d\n", i);
-        dprintf(fd, "hart\t\t: %d\n", i);
-        dprintf(fd, "isa\t\t: %s\n", isa_string);
-        dprintf(fd, "mmu\t\t: %s\n", mmu);
-        dprintf(fd, "uarch\t\t: qemu\n\n");
-    }
-
-    g_free(isa_string);
-    return 0;
-}
-#endif
-
-#if defined(TARGET_S390X)
-/*
- * Emulate what a Linux kernel running in qemu-system-s390x -M accel=tcg would
- * show in /proc/cpuinfo.
- *
- * Skip the following in order to match the missing support in op_ecag():
- * - show_cacheinfo().
- * - show_cpu_topology().
- * - show_cpu_mhz().
- *
- * Use fixed values for certain fields:
- * - bogomips per cpu - from a qemu-system-s390x run.
- * - max thread id = 0, since SMT / SIGP_SET_MULTI_THREADING is not supported.
- *
- * Keep the code structure close to arch/s390/kernel/processor.c.
- */
-
-static void show_facilities(int fd)
-{
-    size_t sizeof_stfl_bytes = 2048;
-    g_autofree uint8_t *stfl_bytes = g_new0(uint8_t, sizeof_stfl_bytes);
-    unsigned int bit;
-
-    dprintf(fd, "facilities      :");
-    s390_get_feat_block(S390_FEAT_TYPE_STFL, stfl_bytes);
-    for (bit = 0; bit < sizeof_stfl_bytes * 8; bit++) {
-        if (test_be_bit(bit, stfl_bytes)) {
-            dprintf(fd, " %d", bit);
-        }
-    }
-    dprintf(fd, "\n");
-}
-
-static int cpu_ident(unsigned long n)
-{
-    return deposit32(0, CPU_ID_BITS - CPU_PHYS_ADDR_BITS, CPU_PHYS_ADDR_BITS,
-                     n);
-}
-
-static void show_cpu_summary(CPUArchState *cpu_env, int fd)
-{
-    S390CPUModel *model = env_archcpu(cpu_env)->model;
-    int num_cpus = sysconf(_SC_NPROCESSORS_ONLN);
-    uint32_t elf_hwcap = get_elf_hwcap();
-    const char *hwcap_str;
-    int i;
-
-    dprintf(fd, "vendor_id       : IBM/S390\n"
-                "# processors    : %i\n"
-                "bogomips per cpu: 13370.00\n",
-            num_cpus);
-    dprintf(fd, "max thread id   : 0\n");
-    dprintf(fd, "features\t: ");
-    for (i = 0; i < sizeof(elf_hwcap) * 8; i++) {
-        if (!(elf_hwcap & (1 << i))) {
-            continue;
-        }
-        hwcap_str = elf_hwcap_str(i);
-        if (hwcap_str) {
-            dprintf(fd, "%s ", hwcap_str);
-        }
-    }
-    dprintf(fd, "\n");
-    show_facilities(fd);
-    for (i = 0; i < num_cpus; i++) {
-        dprintf(fd, "processor %d: "
-               "version = %02X,  "
-               "identification = %06X,  "
-               "machine = %04X\n",
-               i, model->cpu_ver, cpu_ident(i), model->def->type);
-    }
-}
-
-static void show_cpu_ids(CPUArchState *cpu_env, int fd, unsigned long n)
-{
-    S390CPUModel *model = env_archcpu(cpu_env)->model;
-
-    dprintf(fd, "version         : %02X\n", model->cpu_ver);
-    dprintf(fd, "identification  : %06X\n", cpu_ident(n));
-    dprintf(fd, "machine         : %04X\n", model->def->type);
-}
-
-static void show_cpuinfo(CPUArchState *cpu_env, int fd, unsigned long n)
-{
-    dprintf(fd, "\ncpu number      : %ld\n", n);
-    show_cpu_ids(cpu_env, fd, n);
-}
-
-static int open_cpuinfo(CPUArchState *cpu_env, int fd)
-{
-    int num_cpus = sysconf(_SC_NPROCESSORS_ONLN);
-    int i;
-
-    show_cpu_summary(cpu_env, fd);
-    for (i = 0; i < num_cpus; i++) {
-        show_cpuinfo(cpu_env, fd, i);
-    }
-    return 0;
-}
-#endif
-
 #if defined(TARGET_M68K)
 static int open_hardware(CPUArchState *cpu_env, int fd)
 {
@@ -8539,8 +8317,7 @@ static int open_hardware(CPUArchState *cpu_env, int fd)
 }
 #endif
 
-int do_guest_openat(CPUArchState *cpu_env, int dirfd, const char *pathname,
-                    int flags, mode_t mode, bool safe)
+static int do_openat(CPUArchState *cpu_env, int dirfd, const char *pathname, int flags, mode_t mode)
 {
     struct fake_open {
         const char *filename;
@@ -8550,15 +8327,13 @@ int do_guest_openat(CPUArchState *cpu_env, int dirfd, const char *pathname,
     const struct fake_open *fake_open;
     static const struct fake_open fakes[] = {
         { "maps", open_self_maps, is_proc_myself },
-        { "smaps", open_self_smaps, is_proc_myself },
         { "stat", open_self_stat, is_proc_myself },
         { "auxv", open_self_auxv, is_proc_myself },
         { "cmdline", open_self_cmdline, is_proc_myself },
 #if HOST_BIG_ENDIAN != TARGET_BIG_ENDIAN
         { "/proc/net/route", open_net_route, is_proc },
 #endif
-#if defined(TARGET_SPARC) || defined(TARGET_HPPA) || \
-    defined(TARGET_RISCV) || defined(TARGET_S390X)
+#if defined(TARGET_SPARC) || defined(TARGET_HPPA)
         { "/proc/cpuinfo", open_cpuinfo, is_proc },
 #endif
 #if defined(TARGET_M68K)
@@ -8568,11 +8343,7 @@ int do_guest_openat(CPUArchState *cpu_env, int dirfd, const char *pathname,
     };
 
     if (is_proc_myself(pathname, "exe")) {
-        if (safe) {
-            return safe_openat(dirfd, exec_path, flags, mode);
-        } else {
-            return openat(dirfd, exec_path, flags, mode);
-        }
+        return safe_openat(dirfd, exec_path, flags, mode);
     }
 
     for (fake_open = fakes; fake_open->filename; fake_open++) {
@@ -8614,46 +8385,12 @@ int do_guest_openat(CPUArchState *cpu_env, int dirfd, const char *pathname,
         return fd;
     }
 
-    if (safe) {
-        return safe_openat(dirfd, path(pathname), flags, mode);
-    } else {
-        return openat(dirfd, path(pathname), flags, mode);
-    }
+    return safe_openat(dirfd, path(pathname), flags, mode);
 }
 
-ssize_t do_guest_readlink(const char *pathname, char *buf, size_t bufsiz)
-{
-    ssize_t ret;
-
-    if (!pathname || !buf) {
-        errno = EFAULT;
-        return -1;
-    }
-
-    if (!bufsiz) {
-        /* Short circuit this for the magic exe check. */
-        errno = EINVAL;
-        return -1;
-    }
-
-    if (is_proc_myself((const char *)pathname, "exe")) {
-        /*
-         * Don't worry about sign mismatch as earlier mapping
-         * logic would have thrown a bad address error.
-         */
-        ret = MIN(strlen(exec_path), bufsiz);
-        /* We cannot NUL terminate the string. */
-        memcpy(buf, exec_path, ret);
-    } else {
-        ret = readlink(path(pathname), buf, bufsiz);
-    }
-
-    return ret;
-}
-
-static int do_execv(CPUArchState *cpu_env, int dirfd,
-                    abi_long pathname, abi_long guest_argp,
-                    abi_long guest_envp, int flags, bool is_execveat)
+static int do_execveat(CPUArchState *cpu_env, int dirfd,
+                       abi_long pathname, abi_long guest_argp,
+                       abi_long guest_envp, int flags)
 {
     int ret;
     char **argp, **envp;
@@ -8732,14 +8469,11 @@ static int do_execv(CPUArchState *cpu_env, int dirfd,
         goto execve_efault;
     }
 
-    const char *exe = p;
     if (is_proc_myself(p, "exe")) {
-        exe = exec_path;
+        ret = get_errno(safe_execveat(dirfd, exec_path, argp, envp, flags));
+    } else {
+        ret = get_errno(safe_execveat(dirfd, p, argp, envp, flags));
     }
-    ret = is_execveat
-        ? safe_execveat(dirfd, exe, argp, envp, flags)
-        : safe_execve(exe, argp, envp);
-    ret = get_errno(ret);
 
     unlock_user(p, pathname, 0);
 
@@ -9008,161 +8742,8 @@ static int do_getdents64(abi_long dirfd, abi_long arg2, abi_long count)
 }
 #endif /* TARGET_NR_getdents64 */
 
-#if defined(TARGET_NR_riscv_hwprobe)
-
-#define RISCV_HWPROBE_KEY_MVENDORID     0
-#define RISCV_HWPROBE_KEY_MARCHID       1
-#define RISCV_HWPROBE_KEY_MIMPID        2
-
-#define RISCV_HWPROBE_KEY_BASE_BEHAVIOR 3
-#define     RISCV_HWPROBE_BASE_BEHAVIOR_IMA (1 << 0)
-
-#define RISCV_HWPROBE_KEY_IMA_EXT_0     4
-#define     RISCV_HWPROBE_IMA_FD       (1 << 0)
-#define     RISCV_HWPROBE_IMA_C        (1 << 1)
-
-#define RISCV_HWPROBE_KEY_CPUPERF_0     5
-#define     RISCV_HWPROBE_MISALIGNED_UNKNOWN     (0 << 0)
-#define     RISCV_HWPROBE_MISALIGNED_EMULATED    (1 << 0)
-#define     RISCV_HWPROBE_MISALIGNED_SLOW        (2 << 0)
-#define     RISCV_HWPROBE_MISALIGNED_FAST        (3 << 0)
-#define     RISCV_HWPROBE_MISALIGNED_UNSUPPORTED (4 << 0)
-#define     RISCV_HWPROBE_MISALIGNED_MASK        (7 << 0)
-
-struct riscv_hwprobe {
-    abi_llong  key;
-    abi_ullong value;
-};
-
-static void risc_hwprobe_fill_pairs(CPURISCVState *env,
-                                    struct riscv_hwprobe *pair,
-                                    size_t pair_count)
-{
-    const RISCVCPUConfig *cfg = riscv_cpu_cfg(env);
-
-    for (; pair_count > 0; pair_count--, pair++) {
-        abi_llong key;
-        abi_ullong value;
-        __put_user(0, &pair->value);
-        __get_user(key, &pair->key);
-        switch (key) {
-        case RISCV_HWPROBE_KEY_MVENDORID:
-            __put_user(cfg->mvendorid, &pair->value);
-            break;
-        case RISCV_HWPROBE_KEY_MARCHID:
-            __put_user(cfg->marchid, &pair->value);
-            break;
-        case RISCV_HWPROBE_KEY_MIMPID:
-            __put_user(cfg->mimpid, &pair->value);
-            break;
-        case RISCV_HWPROBE_KEY_BASE_BEHAVIOR:
-            value = riscv_has_ext(env, RVI) &&
-                    riscv_has_ext(env, RVM) &&
-                    riscv_has_ext(env, RVA) ?
-                    RISCV_HWPROBE_BASE_BEHAVIOR_IMA : 0;
-            __put_user(value, &pair->value);
-            break;
-        case RISCV_HWPROBE_KEY_IMA_EXT_0:
-            value = riscv_has_ext(env, RVF) &&
-                    riscv_has_ext(env, RVD) ?
-                    RISCV_HWPROBE_IMA_FD : 0;
-            value |= riscv_has_ext(env, RVC) ?
-                     RISCV_HWPROBE_IMA_C : pair->value;
-            __put_user(value, &pair->value);
-            break;
-        case RISCV_HWPROBE_KEY_CPUPERF_0:
-            __put_user(RISCV_HWPROBE_MISALIGNED_FAST, &pair->value);
-            break;
-        default:
-            __put_user(-1, &pair->key);
-            break;
-        }
-    }
-}
-
-static int cpu_set_valid(abi_long arg3, abi_long arg4)
-{
-    int ret, i, tmp;
-    size_t host_mask_size, target_mask_size;
-    unsigned long *host_mask;
-
-    /*
-     * cpu_set_t represent CPU masks as bit masks of type unsigned long *.
-     * arg3 contains the cpu count.
-     */
-    tmp = (8 * sizeof(abi_ulong));
-    target_mask_size = ((arg3 + tmp - 1) / tmp) * sizeof(abi_ulong);
-    host_mask_size = (target_mask_size + (sizeof(*host_mask) - 1)) &
-                     ~(sizeof(*host_mask) - 1);
-
-    host_mask = alloca(host_mask_size);
-
-    ret = target_to_host_cpu_mask(host_mask, host_mask_size,
-                                  arg4, target_mask_size);
-    if (ret != 0) {
-        return ret;
-    }
-
-    for (i = 0 ; i < host_mask_size / sizeof(*host_mask); i++) {
-        if (host_mask[i] != 0) {
-            return 0;
-        }
-    }
-    return -TARGET_EINVAL;
-}
-
-static abi_long do_riscv_hwprobe(CPUArchState *cpu_env, abi_long arg1,
-                                 abi_long arg2, abi_long arg3,
-                                 abi_long arg4, abi_long arg5)
-{
-    int ret;
-    struct riscv_hwprobe *host_pairs;
-
-    /* flags must be 0 */
-    if (arg5 != 0) {
-        return -TARGET_EINVAL;
-    }
-
-    /* check cpu_set */
-    if (arg3 != 0) {
-        ret = cpu_set_valid(arg3, arg4);
-        if (ret != 0) {
-            return ret;
-        }
-    } else if (arg4 != 0) {
-        return -TARGET_EINVAL;
-    }
-
-    /* no pairs */
-    if (arg2 == 0) {
-        return 0;
-    }
-
-    host_pairs = lock_user(VERIFY_WRITE, arg1,
-                           sizeof(*host_pairs) * (size_t)arg2, 0);
-    if (host_pairs == NULL) {
-        return -TARGET_EFAULT;
-    }
-    risc_hwprobe_fill_pairs(cpu_env, host_pairs, arg2);
-    unlock_user(host_pairs, arg1, sizeof(*host_pairs) * (size_t)arg2);
-    return 0;
-}
-#endif /* TARGET_NR_riscv_hwprobe */
-
 #if defined(TARGET_NR_pivot_root) && defined(__NR_pivot_root)
 _syscall2(int, pivot_root, const char *, new_root, const char *, put_old)
-#endif
-
-#if defined(TARGET_NR_open_tree) && defined(__NR_open_tree)
-#define __NR_sys_open_tree __NR_open_tree
-_syscall3(int, sys_open_tree, int, __dfd, const char *, __filename,
-          unsigned int, __flags)
-#endif
-
-#if defined(TARGET_NR_move_mount) && defined(__NR_move_mount)
-#define __NR_sys_move_mount __NR_move_mount
-_syscall5(int, sys_move_mount, int, __from_dfd, const char *, __from_pathname,
-           int, __to_dfd, const char *, __to_pathname, unsigned int, flag)
 #endif
 
 /* This is an internal helper for do_syscall so that it is easier
@@ -9269,9 +8850,9 @@ static abi_long do_syscall1(CPUArchState *cpu_env, int num, abi_long arg1,
     case TARGET_NR_open:
         if (!(p = lock_user_string(arg1)))
             return -TARGET_EFAULT;
-        ret = get_errno(do_guest_openat(cpu_env, AT_FDCWD, p,
+        ret = get_errno(do_openat(cpu_env, AT_FDCWD, p,
                                   target_to_host_bitmask(arg2, fcntl_flags_tbl),
-                                  arg3, true));
+                                  arg3));
         fd_trans_unregister(ret);
         unlock_user(p, arg1, 0);
         return ret;
@@ -9279,9 +8860,9 @@ static abi_long do_syscall1(CPUArchState *cpu_env, int num, abi_long arg1,
     case TARGET_NR_openat:
         if (!(p = lock_user_string(arg2)))
             return -TARGET_EFAULT;
-        ret = get_errno(do_guest_openat(cpu_env, arg1, p,
+        ret = get_errno(do_openat(cpu_env, arg1, p,
                                   target_to_host_bitmask(arg3, fcntl_flags_tbl),
-                                  arg4, true));
+                                  arg4));
         fd_trans_unregister(ret);
         unlock_user(p, arg2, 0);
         return ret;
@@ -9431,9 +9012,9 @@ static abi_long do_syscall1(CPUArchState *cpu_env, int num, abi_long arg1,
         return ret;
 #endif
     case TARGET_NR_execveat:
-        return do_execv(cpu_env, arg1, arg2, arg3, arg4, arg5, true);
+        return do_execveat(cpu_env, arg1, arg2, arg3, arg4, arg5);
     case TARGET_NR_execve:
-        return do_execv(cpu_env, AT_FDCWD, arg1, arg2, arg3, 0, false);
+        return do_execveat(cpu_env, AT_FDCWD, arg1, arg2, arg3, 0);
     case TARGET_NR_chdir:
         if (!(p = lock_user_string(arg1)))
             return -TARGET_EFAULT;
@@ -9557,60 +9138,6 @@ static abi_long do_syscall1(CPUArchState *cpu_env, int num, abi_long arg1,
         ret = get_errno(umount(p));
         unlock_user(p, arg1, 0);
         return ret;
-#endif
-#if defined(TARGET_NR_move_mount) && defined(__NR_move_mount)
-    case TARGET_NR_move_mount:
-        {
-            void *p2, *p4;
-
-            if (!arg2 || !arg4) {
-                return -TARGET_EFAULT;
-            }
-
-            p2 = lock_user_string(arg2);
-            if (!p2) {
-                return -TARGET_EFAULT;
-            }
-
-            p4 = lock_user_string(arg4);
-            if (!p4) {
-                unlock_user(p2, arg2, 0);
-                return -TARGET_EFAULT;
-            }
-            ret = get_errno(sys_move_mount(arg1, p2, arg3, p4, arg5));
-
-            unlock_user(p2, arg2, 0);
-            unlock_user(p4, arg4, 0);
-
-            return ret;
-        }
-#endif
-#if defined(TARGET_NR_open_tree) && defined(__NR_open_tree)
-    case TARGET_NR_open_tree:
-        {
-            void *p2;
-            int host_flags;
-
-            if (!arg2) {
-                return -TARGET_EFAULT;
-            }
-
-            p2 = lock_user_string(arg2);
-            if (!p2) {
-                return -TARGET_EFAULT;
-            }
-
-            host_flags = arg3 & ~TARGET_O_CLOEXEC;
-            if (arg3 & TARGET_O_CLOEXEC) {
-                host_flags |= O_CLOEXEC;
-            }
-
-            ret = get_errno(sys_open_tree(arg1, p2, host_flags));
-
-            unlock_user(p2, arg2, 0);
-
-            return ret;
-        }
 #endif
 #ifdef TARGET_NR_stime /* not on alpha */
     case TARGET_NR_stime:
@@ -10504,7 +10031,22 @@ static abi_long do_syscall1(CPUArchState *cpu_env, int num, abi_long arg1,
             void *p2;
             p = lock_user_string(arg1);
             p2 = lock_user(VERIFY_WRITE, arg2, arg3, 0);
-            ret = get_errno(do_guest_readlink(p, p2, arg3));
+            if (!p || !p2) {
+                ret = -TARGET_EFAULT;
+            } else if (!arg3) {
+                /* Short circuit this for the magic exe check. */
+                ret = -TARGET_EINVAL;
+            } else if (is_proc_myself((const char *)p, "exe")) {
+                /*
+                 * Don't worry about sign mismatch as earlier mapping
+                 * logic would have thrown a bad address error.
+                 */
+                ret = MIN(strlen(exec_path), arg3);
+                /* We cannot NUL terminate the string. */
+                memcpy(p2, exec_path, ret);
+            } else {
+                ret = get_errno(readlink(path(p), p2, arg3));
+            }
             unlock_user(p2, arg2, ret);
             unlock_user(p, arg1, 0);
         }
@@ -10596,7 +10138,7 @@ static abi_long do_syscall1(CPUArchState *cpu_env, int num, abi_long arg1,
 #endif
         ret = target_mmap(arg1, arg2, arg3,
                           target_to_host_bitmask(arg4, mmap_flags_tbl),
-                          arg5, (off_t)(abi_ulong)arg6 << MMAP_SHIFT);
+                          arg5, arg6 << MMAP_SHIFT);
         return get_errno(ret);
 #endif
     case TARGET_NR_munmap:
@@ -11195,14 +10737,16 @@ static abi_long do_syscall1(CPUArchState *cpu_env, int num, abi_long arg1,
 #if defined(TARGET_NR_clock_adjtime) && defined(CONFIG_CLOCK_ADJTIME)
     case TARGET_NR_clock_adjtime:
         {
-            struct timex htx;
+            struct timex htx, *phtx = &htx;
 
-            if (target_to_host_timex(&htx, arg2) != 0) {
+            if (target_to_host_timex(phtx, arg2) != 0) {
                 return -TARGET_EFAULT;
             }
-            ret = get_errno(clock_adjtime(arg1, &htx));
-            if (!is_error(ret) && host_to_target_timex(arg2, &htx)) {
-                return -TARGET_EFAULT;
+            ret = get_errno(clock_adjtime(arg1, phtx));
+            if (!is_error(ret) && phtx) {
+                if (host_to_target_timex(arg2, phtx) != 0) {
+                    return -TARGET_EFAULT;
+                }
             }
         }
         return ret;
@@ -11928,61 +11472,42 @@ static abi_long do_syscall1(CPUArchState *cpu_env, int num, abi_long arg1,
     case TARGET_NR_setregid:
         return get_errno(setregid(low2highgid(arg1), low2highgid(arg2)));
     case TARGET_NR_getgroups:
-        { /* the same code as for TARGET_NR_getgroups32 */
+        {
             int gidsetsize = arg1;
             target_id *target_grouplist;
-            g_autofree gid_t *grouplist = NULL;
+            gid_t *grouplist;
             int i;
 
-            if (gidsetsize > NGROUPS_MAX || gidsetsize < 0) {
-                return -TARGET_EINVAL;
-            }
-            if (gidsetsize > 0) {
-                grouplist = g_try_new(gid_t, gidsetsize);
-                if (!grouplist) {
-                    return -TARGET_ENOMEM;
-                }
-            }
+            grouplist = alloca(gidsetsize * sizeof(gid_t));
             ret = get_errno(getgroups(gidsetsize, grouplist));
-            if (!is_error(ret) && gidsetsize > 0) {
-                target_grouplist = lock_user(VERIFY_WRITE, arg2,
-                                             gidsetsize * sizeof(target_id), 0);
-                if (!target_grouplist) {
+            if (gidsetsize == 0)
+                return ret;
+            if (!is_error(ret)) {
+                target_grouplist = lock_user(VERIFY_WRITE, arg2, gidsetsize * sizeof(target_id), 0);
+                if (!target_grouplist)
                     return -TARGET_EFAULT;
-                }
-                for (i = 0; i < ret; i++) {
+                for(i = 0;i < ret; i++)
                     target_grouplist[i] = tswapid(high2lowgid(grouplist[i]));
-                }
-                unlock_user(target_grouplist, arg2,
-                            gidsetsize * sizeof(target_id));
+                unlock_user(target_grouplist, arg2, gidsetsize * sizeof(target_id));
             }
-            return ret;
         }
+        return ret;
     case TARGET_NR_setgroups:
-        { /* the same code as for TARGET_NR_setgroups32 */
+        {
             int gidsetsize = arg1;
             target_id *target_grouplist;
-            g_autofree gid_t *grouplist = NULL;
+            gid_t *grouplist = NULL;
             int i;
-
-            if (gidsetsize > NGROUPS_MAX || gidsetsize < 0) {
-                return -TARGET_EINVAL;
-            }
-            if (gidsetsize > 0) {
-                grouplist = g_try_new(gid_t, gidsetsize);
-                if (!grouplist) {
-                    return -TARGET_ENOMEM;
-                }
-                target_grouplist = lock_user(VERIFY_READ, arg2,
-                                             gidsetsize * sizeof(target_id), 1);
+            if (gidsetsize) {
+                grouplist = alloca(gidsetsize * sizeof(gid_t));
+                target_grouplist = lock_user(VERIFY_READ, arg2, gidsetsize * sizeof(target_id), 1);
                 if (!target_grouplist) {
                     return -TARGET_EFAULT;
                 }
                 for (i = 0; i < gidsetsize; i++) {
                     grouplist[i] = low2highgid(tswapid(target_grouplist[i]));
                 }
-                unlock_user(target_grouplist, arg2,
-                            gidsetsize * sizeof(target_id));
+                unlock_user(target_grouplist, arg2, 0);
             }
             return get_errno(setgroups(gidsetsize, grouplist));
         }
@@ -12264,62 +11789,44 @@ static abi_long do_syscall1(CPUArchState *cpu_env, int num, abi_long arg1,
 #endif
 #ifdef TARGET_NR_getgroups32
     case TARGET_NR_getgroups32:
-        { /* the same code as for TARGET_NR_getgroups */
+        {
             int gidsetsize = arg1;
             uint32_t *target_grouplist;
-            g_autofree gid_t *grouplist = NULL;
+            gid_t *grouplist;
             int i;
 
-            if (gidsetsize > NGROUPS_MAX || gidsetsize < 0) {
-                return -TARGET_EINVAL;
-            }
-            if (gidsetsize > 0) {
-                grouplist = g_try_new(gid_t, gidsetsize);
-                if (!grouplist) {
-                    return -TARGET_ENOMEM;
-                }
-            }
+            grouplist = alloca(gidsetsize * sizeof(gid_t));
             ret = get_errno(getgroups(gidsetsize, grouplist));
-            if (!is_error(ret) && gidsetsize > 0) {
-                target_grouplist = lock_user(VERIFY_WRITE, arg2,
-                                             gidsetsize * 4, 0);
+            if (gidsetsize == 0)
+                return ret;
+            if (!is_error(ret)) {
+                target_grouplist = lock_user(VERIFY_WRITE, arg2, gidsetsize * 4, 0);
                 if (!target_grouplist) {
                     return -TARGET_EFAULT;
                 }
-                for (i = 0; i < ret; i++) {
+                for(i = 0;i < ret; i++)
                     target_grouplist[i] = tswap32(grouplist[i]);
-                }
                 unlock_user(target_grouplist, arg2, gidsetsize * 4);
             }
-            return ret;
         }
+        return ret;
 #endif
 #ifdef TARGET_NR_setgroups32
     case TARGET_NR_setgroups32:
-        { /* the same code as for TARGET_NR_setgroups */
+        {
             int gidsetsize = arg1;
             uint32_t *target_grouplist;
-            g_autofree gid_t *grouplist = NULL;
+            gid_t *grouplist;
             int i;
 
-            if (gidsetsize > NGROUPS_MAX || gidsetsize < 0) {
-                return -TARGET_EINVAL;
+            grouplist = alloca(gidsetsize * sizeof(gid_t));
+            target_grouplist = lock_user(VERIFY_READ, arg2, gidsetsize * 4, 1);
+            if (!target_grouplist) {
+                return -TARGET_EFAULT;
             }
-            if (gidsetsize > 0) {
-                grouplist = g_try_new(gid_t, gidsetsize);
-                if (!grouplist) {
-                    return -TARGET_ENOMEM;
-                }
-                target_grouplist = lock_user(VERIFY_READ, arg2,
-                                             gidsetsize * 4, 1);
-                if (!target_grouplist) {
-                    return -TARGET_EFAULT;
-                }
-                for (i = 0; i < gidsetsize; i++) {
-                    grouplist[i] = tswap32(target_grouplist[i]);
-                }
-                unlock_user(target_grouplist, arg2, 0);
-            }
+            for(i = 0;i < gidsetsize; i++)
+                grouplist[i] = tswap32(target_grouplist[i]);
+            unlock_user(target_grouplist, arg2, 0);
             return get_errno(setgroups(gidsetsize, grouplist));
         }
 #endif
@@ -12390,7 +11897,7 @@ static abi_long do_syscall1(CPUArchState *cpu_env, int num, abi_long arg1,
 #ifdef TARGET_NR_mincore
     case TARGET_NR_mincore:
         {
-            void *a = lock_user(VERIFY_NONE, arg1, arg2, 0);
+            void *a = lock_user(VERIFY_READ, arg1, arg2, 0);
             if (!a) {
                 return -TARGET_ENOMEM;
             }
@@ -13827,11 +13334,6 @@ static abi_long do_syscall1(CPUArchState *cpu_env, int num, abi_long arg1,
             unlock_user(p, arg1, 0);
         }
         return ret;
-#endif
-
-#if defined(TARGET_NR_riscv_hwprobe)
-    case TARGET_NR_riscv_hwprobe:
-        return do_riscv_hwprobe(cpu_env, arg1, arg2, arg3, arg4, arg5);
 #endif
 
     default:

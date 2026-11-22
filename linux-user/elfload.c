@@ -17,7 +17,6 @@
 #include "qemu/guest-random.h"
 #include "qemu/units.h"
 #include "qemu/selfmap.h"
-#include "qemu/lockable.h"
 #include "qapi/error.h"
 #include "qemu/error-report.h"
 #include "target_signal.h"
@@ -424,23 +423,10 @@ enum {
 
 static bool init_guest_commpage(void)
 {
-    ARMCPU *cpu = ARM_CPU(thread_cpu);
-    abi_ptr commpage;
-    void *want;
-    void *addr;
-
-    /*
-     * M-profile allocates maximum of 2GB address space, so can never
-     * allocate the commpage.  Skip it.
-     */
-    if (arm_feature(&cpu->env, ARM_FEATURE_M)) {
-        return true;
-    }
-
-    commpage = HI_COMMPAGE & -qemu_host_page_size;
-    want = g2h_untagged(commpage);
-    addr = mmap(want, qemu_host_page_size, PROT_READ | PROT_WRITE,
-                MAP_ANONYMOUS | MAP_PRIVATE | MAP_FIXED, -1, 0);
+    abi_ptr commpage = HI_COMMPAGE & -qemu_host_page_size;
+    void *want = g2h_untagged(commpage);
+    void *addr = mmap(want, qemu_host_page_size, PROT_READ | PROT_WRITE,
+                      MAP_ANONYMOUS | MAP_PRIVATE | MAP_FIXED, -1, 0);
 
     if (addr == MAP_FAILED) {
         perror("Allocating guest commpage");
@@ -975,7 +961,9 @@ static void elf_core_copy_regs(target_elf_gregset_t *regs, const CPUPPCState *en
     (*regs)[36] = tswapreg(env->lr);
     (*regs)[37] = tswapreg(cpu_read_xer(env));
 
-    ccr = ppc_get_cr(env);
+    for (i = 0; i < ARRAY_SIZE(env->crf); i++) {
+        ccr |= env->crf[i] << (32 - ((i + 1) * 4));
+    }
     (*regs)[38] = tswapreg(ccr);
 }
 
@@ -1596,7 +1584,7 @@ static inline void init_thread(struct target_pt_regs *regs,
 #define GET_FEATURE(_feat, _hwcap) \
     do { if (s390_has_feat(_feat)) { hwcap |= _hwcap; } } while (0)
 
-uint32_t get_elf_hwcap(void)
+static uint32_t get_elf_hwcap(void)
 {
     /*
      * Let's assume we always have esan3 and zarch.
@@ -1618,42 +1606,10 @@ uint32_t get_elf_hwcap(void)
     return hwcap;
 }
 
-const char *elf_hwcap_str(uint32_t bit)
-{
-    static const char *hwcap_str[] = {
-        [HWCAP_S390_NR_ESAN3]     = "esan3",
-        [HWCAP_S390_NR_ZARCH]     = "zarch",
-        [HWCAP_S390_NR_STFLE]     = "stfle",
-        [HWCAP_S390_NR_MSA]       = "msa",
-        [HWCAP_S390_NR_LDISP]     = "ldisp",
-        [HWCAP_S390_NR_EIMM]      = "eimm",
-        [HWCAP_S390_NR_DFP]       = "dfp",
-        [HWCAP_S390_NR_HPAGE]     = "edat",
-        [HWCAP_S390_NR_ETF3EH]    = "etf3eh",
-        [HWCAP_S390_NR_HIGH_GPRS] = "highgprs",
-        [HWCAP_S390_NR_TE]        = "te",
-        [HWCAP_S390_NR_VXRS]      = "vx",
-        [HWCAP_S390_NR_VXRS_BCD]  = "vxd",
-        [HWCAP_S390_NR_VXRS_EXT]  = "vxe",
-        [HWCAP_S390_NR_GS]        = "gs",
-        [HWCAP_S390_NR_VXRS_EXT2] = "vxe2",
-        [HWCAP_S390_NR_VXRS_PDE]  = "vxp",
-        [HWCAP_S390_NR_SORT]      = "sort",
-        [HWCAP_S390_NR_DFLT]      = "dflt",
-        [HWCAP_S390_NR_NNPA]      = "nnpa",
-        [HWCAP_S390_NR_PCI_MIO]   = "pcimio",
-        [HWCAP_S390_NR_SIE]       = "sie",
-    };
-
-    return bit < ARRAY_SIZE(hwcap_str) ? hwcap_str[bit] : NULL;
-}
-
 static inline void init_thread(struct target_pt_regs *regs, struct image_info *infop)
 {
     regs->psw.addr = infop->entry;
-    regs->psw.mask = PSW_MASK_DAT | PSW_MASK_IO | PSW_MASK_EXT | \
-                     PSW_MASK_MCHECK | PSW_MASK_PSTATE | PSW_MASK_64 | \
-                     PSW_MASK_32;
+    regs->psw.mask = PSW_MASK_64 | PSW_MASK_32;
     regs->gprs[15] = infop->start_stack;
 }
 
@@ -2816,9 +2772,8 @@ static void pgb_reserved_va(const char *image_name, abi_ulong guest_loaddr,
     if (addr == MAP_FAILED || addr != test) {
         error_report("Unable to reserve 0x%lx bytes of virtual address "
                      "space at %p (%s) for use as guest address space (check your "
-                     "virtual memory ulimit setting, mmap_min_addr or reserve less "
-                     "using qemu-user's -R option)",
-                     reserved_va + 1, test, strerror(errno));
+                     "virtual memory ulimit setting, min_mmap_addr or reserve less "
+                     "using -R option)", reserved_va + 1, test, strerror(errno));
         exit(EXIT_FAILURE);
     }
 
@@ -3374,10 +3329,9 @@ static void load_elf_interp(const char *filename, struct image_info *info,
 
 static int symfind(const void *s0, const void *s1)
 {
+    target_ulong addr = *(target_ulong *)s0;
     struct elf_sym *sym = (struct elf_sym *)s1;
-    __typeof(sym->st_value) addr = *(uint64_t *)s0;
     int result = 0;
-
     if (addr < sym->st_value) {
         result = -1;
     } else if (addr >= sym->st_value + sym->st_size) {
@@ -3386,7 +3340,7 @@ static int symfind(const void *s0, const void *s1)
     return result;
 }
 
-static const char *lookup_symbolxx(struct syminfo *s, uint64_t orig_addr)
+static const char *lookup_symbolxx(struct syminfo *s, target_ulong orig_addr)
 {
 #if ELF_CLASS == ELFCLASS32
     struct elf_sym *syms = s->disas_symtab.elf32;
@@ -4285,14 +4239,14 @@ static int fill_note_info(struct elf_note_info *info,
         info->notes_size += note_size(&info->notes[i]);
 
     /* read and fill status of all threads */
-    WITH_QEMU_LOCK_GUARD(&qemu_cpu_list_lock) {
-        CPU_FOREACH(cpu) {
-            if (cpu == thread_cpu) {
-                continue;
-            }
-            fill_thread_info(info, cpu->env_ptr);
+    cpu_list_lock();
+    CPU_FOREACH(cpu) {
+        if (cpu == thread_cpu) {
+            continue;
         }
+        fill_thread_info(info, cpu->env_ptr);
     }
+    cpu_list_unlock();
 
     return (0);
 }

@@ -1,7 +1,7 @@
 /*
  * SPDX-License-Identifier: GPL-2.0-or-later
  *
- * QEMU Virtual M68K Machine
+ * QEMU Vitual M68K Machine
  *
  * (c) 2020 Laurent Vivier <laurent@vivier.eu>
  *

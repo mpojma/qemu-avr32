@@ -894,7 +894,7 @@ int armv7m_nvic_complete_irq(NVICState *s, int irq, bool secure)
     vec->active = 0;
     if (vec->level) {
         /* Re-pend the exception if it's still held high; only
-         * happens for external IRQs
+         * happens for extenal IRQs
          */
         assert(irq >= NVIC_FIRST_IRQ);
         vec->pending = 1;

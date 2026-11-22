@@ -37,8 +37,12 @@ static target_long monitor_get_ccr(Monitor *mon, const struct MonitorDef *md,
 {
     CPUArchState *env = mon_get_cpu_env(mon);
     unsigned int u;
+    int i;
 
-    u = ppc_get_cr(env);
+    u = 0;
+    for (i = 0; i < 8; i++) {
+        u |= env->crf[i] << (32 - (4 * (i + 1)));
+    }
 
     return u;
 }

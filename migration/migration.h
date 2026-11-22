@@ -25,7 +25,6 @@
 #include "net/announce.h"
 #include "qom/object.h"
 #include "postcopy-ram.h"
-#include "sysemu/runstate.h"
 
 struct PostcopyBlocktimeContext;
 
@@ -134,7 +133,7 @@ struct MigrationIncomingState {
     /*
      * Always set by the main vm load thread only, but can be read by the
      * postcopy preempt thread.  "volatile" makes sure all reads will be
-     * up-to-date across cores.
+     * uptodate across cores.
      */
     volatile PreemptThreadStatus preempt_thread_status;
     /*
@@ -163,15 +162,10 @@ struct MigrationIncomingState {
 
     int state;
 
-    /*
-     * The incoming migration coroutine, non-NULL during qemu_loadvm_state().
-     * Used to wake the migration incoming coroutine from rdma code. How much is
-     * it safe - it's a question.
-     */
-    Coroutine *loadvm_co;
-
+    bool have_colo_incoming_thread;
+    QemuThread colo_incoming_thread;
     /* The coroutine we should enter (back) after failover */
-    Coroutine *colo_incoming_co;
+    Coroutine *migration_incoming_co;
     QemuSemaphore colo_incoming_sem;
 
     /*
@@ -210,13 +204,6 @@ struct MigrationIncomingState {
      * contains valid information.
      */
     QemuMutex page_request_mutex;
-
-    /*
-     * Number of devices that have yet to approve switchover. When this reaches
-     * zero an ACK that it's OK to do switchover is sent to the source. No lock
-     * is needed as this field is updated serially.
-     */
-    unsigned int switchover_ack_pending_num;
 };
 
 MigrationIncomingState *migration_incoming_get_current(void);
@@ -325,14 +312,12 @@ struct MigrationState {
     int64_t expected_downtime;
     bool capabilities[MIGRATION_CAPABILITY__MAX];
     int64_t setup_time;
-
     /*
-     * State before stopping the vm by vm_stop_force_state().
+     * Whether guest was running when we enter the completion stage.
      * If migration is interrupted by any reason, we need to continue
-     * running the guest on source if it was running or restore its stopped
-     * state.
+     * running the guest on source.
      */
-    RunState vm_old_state;
+    bool vm_was_running;
 
     /* Flag set once the migration has been asked to enter postcopy */
     bool start_postcopy;
@@ -409,7 +394,7 @@ struct MigrationState {
      *   channel itself.
      *
      * - postcopy preempt channel will be created at the switching phase
-     *   from precopy -> postcopy (to avoid race condition of misordered
+     *   from precopy -> postcopy (to avoid race condtion of misordered
      *   creation of channels).
      *
      * NOTE: See message-id <ZBoShWArKDPpX/D7@work-vm> on qemu-devel
@@ -447,12 +432,6 @@ struct MigrationState {
 
     /* QEMU_VM_VMDESCRIPTION content filled for all non-iterable devices. */
     JSONWriter *vmdesc;
-
-    /*
-     * Indicates whether an ACK from the destination that it's OK to do
-     * switchover has been received.
-     */
-    bool switchover_acked;
 };
 
 void migrate_set_state(int *state, int old_state, int new_state);
@@ -466,6 +445,7 @@ bool  migration_has_all_channels(void);
 uint64_t migrate_max_downtime(void);
 
 void migrate_set_error(MigrationState *s, const Error *error);
+void migrate_fd_error(MigrationState *s, const Error *error);
 
 void migrate_fd_connect(MigrationState *s, Error *error_in);
 
@@ -492,7 +472,6 @@ int migrate_send_rp_message_req_pages(MigrationIncomingState *mis,
 void migrate_send_rp_recv_bitmap(MigrationIncomingState *mis,
                                  char *block_name);
 void migrate_send_rp_resume_ack(MigrationIncomingState *mis, uint32_t value);
-int migrate_send_rp_switchover_ack(MigrationIncomingState *mis);
 
 void dirty_bitmap_mig_before_vm_start(void);
 void dirty_bitmap_mig_cancel_outgoing(void);
@@ -513,7 +492,6 @@ bool migration_rate_limit(void);
 void migration_cancel(const Error *error);
 
 void populate_vfio_info(MigrationInfo *info);
-void reset_vfio_bytes_transferred(void);
 void postcopy_temp_page_reset(PostcopyTmpPage *tmp_page);
 
 #endif

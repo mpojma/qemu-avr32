@@ -46,13 +46,13 @@ def_helper_types_pair = {
 }
 
 
-def gen_def_helper_opn(f, tag, regtype, regid, i):
+def gen_def_helper_opn(f, tag, regtype, regid, toss, numregs, i):
     if hex_common.is_pair(regid):
         f.write(f", {def_helper_types_pair[regtype]}")
     elif hex_common.is_single(regid):
         f.write(f", {def_helper_types[regtype]}")
     else:
-        hex_common.bad_register(regtype, regid)
+        print("Bad register parse: ", regtype, regid, toss, numregs)
 
 
 ##
@@ -68,7 +68,7 @@ def gen_helper_prototype(f, tag, tagregs, tagimms):
     numresults = 0
     numscalarresults = 0
     numscalarreadwrite = 0
-    for regtype, regid in regs:
+    for regtype, regid, toss, numregs in regs:
         if hex_common.is_written(regid):
             numresults += 1
             if hex_common.is_scalar_reg(regtype):
@@ -85,8 +85,6 @@ def gen_helper_prototype(f, tag, tagregs, tagimms):
         if numscalarresults == 0:
             def_helper_size = len(regs) + len(imms) + numscalarreadwrite + 1
             if hex_common.need_pkt_has_multi_cof(tag):
-                def_helper_size += 1
-            if hex_common.need_pkt_need_commit(tag):
                 def_helper_size += 1
             if hex_common.need_part1(tag):
                 def_helper_size += 1
@@ -105,8 +103,6 @@ def gen_helper_prototype(f, tag, tagregs, tagimms):
             def_helper_size = len(regs) + len(imms) + numscalarreadwrite
             if hex_common.need_pkt_has_multi_cof(tag):
                 def_helper_size += 1
-            if hex_common.need_pkt_need_commit(tag):
-                def_helper_size += 1
             if hex_common.need_part1(tag):
                 def_helper_size += 1
             if hex_common.need_slot(tag):
@@ -124,10 +120,10 @@ def gen_helper_prototype(f, tag, tagregs, tagimms):
         ## - Emit the scalar result
         ## - Emit the vector result
         i = 0
-        for regtype, regid in regs:
+        for regtype, regid, toss, numregs in regs:
             if hex_common.is_written(regid):
                 if not hex_common.is_hvx_reg(regtype):
-                    gen_def_helper_opn(f, tag, regtype, regid, i)
+                    gen_def_helper_opn(f, tag, regtype, regid, toss, numregs, i)
                 i += 1
 
         ## Put the env between the outputs and inputs
@@ -135,37 +131,35 @@ def gen_helper_prototype(f, tag, tagregs, tagimms):
         i += 1
 
         # Second pass
-        for regtype, regid in regs:
+        for regtype, regid, toss, numregs in regs:
             if hex_common.is_written(regid):
                 if hex_common.is_hvx_reg(regtype):
-                    gen_def_helper_opn(f, tag, regtype, regid, i)
+                    gen_def_helper_opn(f, tag, regtype, regid, toss, numregs, i)
                     i += 1
 
         ## For conditional instructions, we pass in the destination register
         if "A_CONDEXEC" in hex_common.attribdict[tag]:
-            for regtype, regid in regs:
+            for regtype, regid, toss, numregs in regs:
                 if hex_common.is_writeonly(regid) and not hex_common.is_hvx_reg(
                     regtype
                 ):
-                    gen_def_helper_opn(f, tag, regtype, regid, i)
+                    gen_def_helper_opn(f, tag, regtype, regid, toss, numregs, i)
                     i += 1
 
         ## Generate the qemu type for each input operand (regs and immediates)
-        for regtype, regid in regs:
+        for regtype, regid, toss, numregs in regs:
             if hex_common.is_read(regid):
                 if hex_common.is_hvx_reg(regtype) and hex_common.is_readwrite(regid):
                     continue
-                gen_def_helper_opn(f, tag, regtype, regid, i)
+                gen_def_helper_opn(f, tag, regtype, regid, toss, numregs, i)
                 i += 1
         for immlett, bits, immshift in imms:
             f.write(", s32")
 
-        ## Add the arguments for the instruction pkt_has_multi_cof,
-        ## pkt_needs_commit, PC, next_PC, slot, and part1 (if needed)
+        ## Add the arguments for the instruction pkt_has_multi_cof, slot and
+        ## part1 (if needed)
         if hex_common.need_pkt_has_multi_cof(tag):
             f.write(", i32")
-        if hex_common.need_pkt_need_commit(tag):
-            f.write(', i32')
         if hex_common.need_PC(tag):
             f.write(", i32")
         if hex_common.helper_needs_next_PC(tag):

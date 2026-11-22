@@ -28,11 +28,6 @@
 #include "exec/translator.h"
 #include "exec/log.h"
 
-#define HELPER_H "helper.h"
-#include "exec/helper-info.c.inc"
-#undef  HELPER_H
-
-
 typedef struct DisasContext {
     DisasContextBase base;
     CPURXState *env;
@@ -72,6 +67,8 @@ static TCGv cpu_fintv, cpu_intb, cpu_pc;
 static TCGv_i64 cpu_acc;
 
 #define cpu_sp cpu_regs[0]
+
+#include "exec/gen-icount.h"
 
 /* decoder helper */
 static uint32_t decode_load_bytes(DisasContext *ctx, uint32_t insn,
@@ -2066,7 +2063,7 @@ static inline void clrsetpsw(DisasContext *ctx, int cb, int val)
             tcg_gen_movi_i32(cpu_psw_o, val << 31);
             break;
         default:
-            qemu_log_mask(LOG_GUEST_ERROR, "Invalid destination %d", cb);
+            qemu_log_mask(LOG_GUEST_ERROR, "Invalid distination %d", cb);
             break;
         }
     } else if (is_privileged(ctx, 0)) {
@@ -2084,7 +2081,7 @@ static inline void clrsetpsw(DisasContext *ctx, int cb, int val)
             }
             break;
         default:
-            qemu_log_mask(LOG_GUEST_ERROR, "Invalid destination %d", cb);
+            qemu_log_mask(LOG_GUEST_ERROR, "Invalid distination %d", cb);
             break;
         }
     }

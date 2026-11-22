@@ -23,11 +23,9 @@
 #include "migration/colo.h"
 #include "migration/misc.h"
 #include "migration.h"
-#include "migration-stats.h"
 #include "qemu-file.h"
 #include "ram.h"
 #include "options.h"
-#include "sysemu/kvm.h"
 
 /* Maximum migrate downtime set to 2000 seconds */
 #define MAX_MIGRATE_DOWNTIME_SECONDS 2000
@@ -80,9 +78,6 @@
 
 #define DEFINE_PROP_MIG_CAP(name, x)             \
     DEFINE_PROP_BOOL(name, MigrationState, capabilities[x], false)
-
-#define DEFAULT_MIGRATE_VCPU_DIRTY_LIMIT_PERIOD     1000    /* milliseconds */
-#define DEFAULT_MIGRATE_VCPU_DIRTY_LIMIT            1       /* MB/s */
 
 Property migration_properties[] = {
     DEFINE_PROP_BOOL("store-global-state", MigrationState,
@@ -167,12 +162,6 @@ Property migration_properties[] = {
     DEFINE_PROP_STRING("tls-creds", MigrationState, parameters.tls_creds),
     DEFINE_PROP_STRING("tls-hostname", MigrationState, parameters.tls_hostname),
     DEFINE_PROP_STRING("tls-authz", MigrationState, parameters.tls_authz),
-    DEFINE_PROP_UINT64("x-vcpu-dirty-limit-period", MigrationState,
-                       parameters.x_vcpu_dirty_limit_period,
-                       DEFAULT_MIGRATE_VCPU_DIRTY_LIMIT_PERIOD),
-    DEFINE_PROP_UINT64("vcpu-dirty-limit", MigrationState,
-                       parameters.vcpu_dirty_limit,
-                       DEFAULT_MIGRATE_VCPU_DIRTY_LIMIT),
 
     /* Migration capabilities */
     DEFINE_PROP_MIG_CAP("x-xbzrle", MIGRATION_CAPABILITY_XBZRLE),
@@ -195,9 +184,7 @@ Property migration_properties[] = {
     DEFINE_PROP_MIG_CAP("x-zero-copy-send",
             MIGRATION_CAPABILITY_ZERO_COPY_SEND),
 #endif
-    DEFINE_PROP_MIG_CAP("x-switchover-ack",
-                        MIGRATION_CAPABILITY_SWITCHOVER_ACK),
-    DEFINE_PROP_MIG_CAP("x-dirty-limit", MIGRATION_CAPABILITY_DIRTY_LIMIT),
+
     DEFINE_PROP_END_OF_LIST(),
 };
 
@@ -241,13 +228,6 @@ bool migrate_dirty_bitmaps(void)
     MigrationState *s = migrate_get_current();
 
     return s->capabilities[MIGRATION_CAPABILITY_DIRTY_BITMAPS];
-}
-
-bool migrate_dirty_limit(void)
-{
-    MigrationState *s = migrate_get_current();
-
-    return s->capabilities[MIGRATION_CAPABILITY_DIRTY_LIMIT];
 }
 
 bool migrate_events(void)
@@ -325,13 +305,6 @@ bool migrate_return_path(void)
     MigrationState *s = migrate_get_current();
 
     return s->capabilities[MIGRATION_CAPABILITY_RETURN_PATH];
-}
-
-bool migrate_switchover_ack(void)
-{
-    MigrationState *s = migrate_get_current();
-
-    return s->capabilities[MIGRATION_CAPABILITY_SWITCHOVER_ACK];
 }
 
 bool migrate_validate_uuid(void)
@@ -440,11 +413,6 @@ INITIALIZE_MIGRATE_CAPS_SET(check_caps_background_snapshot,
     MIGRATION_CAPABILITY_X_COLO,
     MIGRATION_CAPABILITY_VALIDATE_UUID,
     MIGRATION_CAPABILITY_ZERO_COPY_SEND);
-
-static bool migrate_incoming_started(void)
-{
-    return !!migration_incoming_get_current()->transport_data;
-}
 
 /**
  * @migration_caps_check - check capability compatibility
@@ -569,42 +537,11 @@ bool migrate_caps_check(bool *old_caps, bool *new_caps, Error **errp)
             error_setg(errp, "Postcopy preempt not compatible with compress");
             return false;
         }
-
-        if (migrate_incoming_started()) {
-            error_setg(errp,
-                       "Postcopy preempt must be set before incoming starts");
-            return false;
-        }
     }
 
     if (new_caps[MIGRATION_CAPABILITY_MULTIFD]) {
         if (new_caps[MIGRATION_CAPABILITY_COMPRESS]) {
             error_setg(errp, "Multifd is not compatible with compress");
-            return false;
-        }
-        if (migrate_incoming_started()) {
-            error_setg(errp, "Multifd must be set before incoming starts");
-            return false;
-        }
-    }
-
-    if (new_caps[MIGRATION_CAPABILITY_SWITCHOVER_ACK]) {
-        if (!new_caps[MIGRATION_CAPABILITY_RETURN_PATH]) {
-            error_setg(errp, "Capability 'switchover-ack' requires capability "
-                             "'return-path'");
-            return false;
-        }
-    }
-    if (new_caps[MIGRATION_CAPABILITY_DIRTY_LIMIT]) {
-        if (new_caps[MIGRATION_CAPABILITY_AUTO_CONVERGE]) {
-            error_setg(errp, "dirty-limit conflicts with auto-converge"
-                       " either of then available currently");
-            return false;
-        }
-
-        if (!kvm_enabled() || !kvm_dirty_ring_enabled()) {
-            error_setg(errp, "dirty-limit requires KVM with accelerator"
-                   " property 'dirty-ring-size' set");
             return false;
         }
     }
@@ -661,7 +598,7 @@ void qmp_migrate_set_capabilities(MigrationCapabilityStatusList *params,
     MigrationCapabilityStatusList *cap;
     bool new_caps[MIGRATION_CAPABILITY__MAX];
 
-    if (migration_is_running(s->state) || migration_in_colo_state()) {
+    if (migration_is_running(s->state)) {
         error_setg(errp, QERR_MIGRATION_ACTIVE);
         return;
     }
@@ -687,13 +624,6 @@ const BitmapMigrationNodeAliasList *migrate_block_bitmap_mapping(void)
     MigrationState *s = migrate_get_current();
 
     return s->parameters.block_bitmap_mapping;
-}
-
-bool migrate_has_block_bitmap_mapping(void)
-{
-    MigrationState *s = migrate_get_current();
-
-    return s->parameters.has_block_bitmap_mapping;
 }
 
 bool migrate_block_incremental(void)
@@ -780,7 +710,7 @@ uint64_t migrate_max_bandwidth(void)
     return s->parameters.max_bandwidth;
 }
 
-uint64_t migrate_max_postcopy_bandwidth(void)
+int64_t migrate_max_postcopy_bandwidth(void)
 {
     MigrationState *s = migrate_get_current();
 
@@ -953,11 +883,6 @@ MigrationParameters *qmp_query_migrate_parameters(Error **errp)
                        s->parameters.block_bitmap_mapping);
     }
 
-    params->has_x_vcpu_dirty_limit_period = true;
-    params->x_vcpu_dirty_limit_period = s->parameters.x_vcpu_dirty_limit_period;
-    params->has_vcpu_dirty_limit = true;
-    params->vcpu_dirty_limit = s->parameters.vcpu_dirty_limit;
-
     return params;
 }
 
@@ -990,8 +915,6 @@ void migrate_params_init(MigrationParameters *params)
     params->has_announce_max = true;
     params->has_announce_rounds = true;
     params->has_announce_step = true;
-    params->has_x_vcpu_dirty_limit_period = true;
-    params->has_vcpu_dirty_limit = true;
 }
 
 /*
@@ -1152,23 +1075,6 @@ bool migrate_params_check(MigrationParameters *params, Error **errp)
     }
 #endif
 
-    if (params->has_x_vcpu_dirty_limit_period &&
-        (params->x_vcpu_dirty_limit_period < 1 ||
-         params->x_vcpu_dirty_limit_period > 1000)) {
-        error_setg(errp, QERR_INVALID_PARAMETER_VALUE,
-                   "x-vcpu-dirty-limit-period",
-                   "a value between 1 and 1000");
-        return false;
-    }
-
-    if (params->has_vcpu_dirty_limit &&
-        (params->vcpu_dirty_limit < 1)) {
-        error_setg(errp, QERR_INVALID_PARAMETER_VALUE,
-                   "vcpu_dirty_limit",
-                   "is invalid, it must greater then 1 MB/s");
-        return false;
-    }
-
     return true;
 }
 
@@ -1268,14 +1174,6 @@ static void migrate_params_test_apply(MigrateSetParameters *params,
         dest->has_block_bitmap_mapping = true;
         dest->block_bitmap_mapping = params->block_bitmap_mapping;
     }
-
-    if (params->has_x_vcpu_dirty_limit_period) {
-        dest->x_vcpu_dirty_limit_period =
-            params->x_vcpu_dirty_limit_period;
-    }
-    if (params->has_vcpu_dirty_limit) {
-        dest->vcpu_dirty_limit = params->vcpu_dirty_limit;
-    }
 }
 
 static void migrate_params_apply(MigrateSetParameters *params, Error **errp)
@@ -1337,7 +1235,8 @@ static void migrate_params_apply(MigrateSetParameters *params, Error **errp)
     if (params->has_max_bandwidth) {
         s->parameters.max_bandwidth = params->max_bandwidth;
         if (s->to_dst_file && !migration_in_postcopy()) {
-            migration_rate_set(s->parameters.max_bandwidth);
+            qemu_file_set_rate_limit(s->to_dst_file,
+                                s->parameters.max_bandwidth / XFER_LIMIT_RATIO);
         }
     }
 
@@ -1347,7 +1246,9 @@ static void migrate_params_apply(MigrateSetParameters *params, Error **errp)
 
     if (params->has_x_checkpoint_delay) {
         s->parameters.x_checkpoint_delay = params->x_checkpoint_delay;
-        colo_checkpoint_delay_set();
+        if (migration_in_colo_state()) {
+            colo_checkpoint_notify(s);
+        }
     }
 
     if (params->has_block_incremental) {
@@ -1366,7 +1267,8 @@ static void migrate_params_apply(MigrateSetParameters *params, Error **errp)
     if (params->has_max_postcopy_bandwidth) {
         s->parameters.max_postcopy_bandwidth = params->max_postcopy_bandwidth;
         if (s->to_dst_file && migration_in_postcopy()) {
-            migration_rate_set(s->parameters.max_postcopy_bandwidth);
+            qemu_file_set_rate_limit(s->to_dst_file,
+                    s->parameters.max_postcopy_bandwidth / XFER_LIMIT_RATIO);
         }
     }
     if (params->has_max_cpu_throttle) {
@@ -1393,14 +1295,6 @@ static void migrate_params_apply(MigrateSetParameters *params, Error **errp)
         s->parameters.block_bitmap_mapping =
             QAPI_CLONE(BitmapMigrationNodeAliasList,
                        params->block_bitmap_mapping);
-    }
-
-    if (params->has_x_vcpu_dirty_limit_period) {
-        s->parameters.x_vcpu_dirty_limit_period =
-            params->x_vcpu_dirty_limit_period;
-    }
-    if (params->has_vcpu_dirty_limit) {
-        s->parameters.vcpu_dirty_limit = params->vcpu_dirty_limit;
     }
 }
 

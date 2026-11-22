@@ -34,6 +34,7 @@ struct I82378State {
 
     qemu_irq cpu_intr;
     qemu_irq *isa_irqs_in;
+    MemoryRegion io;
 };
 
 static const VMStateDescription vmstate_i82378 = {

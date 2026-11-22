@@ -35,7 +35,9 @@ bool qemu_log_separate(void);
 /* LOG_STRACE is used for user-mode strace logging. */
 #define LOG_STRACE         (1 << 19)
 #define LOG_PER_THREAD     (1 << 20)
-#define CPU_LOG_TB_VPU     (1 << 21)
+#define LOG_AVR32_DISAS    (1 << 21)
+#define LOG_AVR32_CPU      (1 << 22)
+#define LOG_AVR32_DEV      (1 << 23)
 
 /* Lock/unlock output. */
 

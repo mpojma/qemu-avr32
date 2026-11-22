@@ -21,7 +21,7 @@ struct CPUJumpCache {
     struct rcu_head rcu;
     struct {
         TranslationBlock *tb;
-        vaddr pc;
+        target_ulong pc;
     } array[TB_JMP_CACHE_SIZE];
 };
 

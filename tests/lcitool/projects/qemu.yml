@@ -24,9 +24,9 @@ packages:
  - fuse3
  - g++
  - gcc
- - gcc-native
  - gcovr
  - gettext
+ - genisoimage
  - glib2
  - glib2-native
  - glib2-static
@@ -73,7 +73,6 @@ packages:
  - llvm
  - lttng-ust
  - lzo
- - mtools
  - netcat
  - nettle
  - ninja
@@ -85,7 +84,6 @@ packages:
  - pam
  - pcre-static
  - pixman
- - pipewire
  - pkg-config
  - pulseaudio
  - python3
@@ -118,7 +116,6 @@ packages:
  - which
  - xen
  - xfsprogs
- - xorriso
  - zstdtools
  - zlib
  - zlib-static

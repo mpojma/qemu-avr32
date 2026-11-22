@@ -1,5 +1,5 @@
 /*
- *  Copyright Red Hat
+ *  Copyright (C) 2016-2022 Red Hat, Inc.
  *  Copyright (C) 2005  Anthony Liguori <anthony@codemonkey.ws>
  *
  *  Network Block Device Server Side
@@ -1189,7 +1189,7 @@ static int nbd_negotiate_options(NBDClient *client, Error **errp)
                 }
                 ret = 0;
                 object_unref(OBJECT(client->ioc));
-                client->ioc = tioc;
+                client->ioc = QIO_CHANNEL(tioc);
                 break;
 
             case NBD_OPT_EXPORT_NAME:
@@ -1428,7 +1428,7 @@ static int coroutine_fn nbd_receive_request(NBDClient *client, NBDRequest *reque
        [ 0 ..  3]   magic   (NBD_REQUEST_MAGIC)
        [ 4 ..  5]   flags   (NBD_CMD_FLAG_FUA, ...)
        [ 6 ..  7]   type    (NBD_CMD_READ, ...)
-       [ 8 .. 15]   cookie
+       [ 8 .. 15]   handle
        [16 .. 23]   from
        [24 .. 27]   len
      */
@@ -1436,7 +1436,7 @@ static int coroutine_fn nbd_receive_request(NBDClient *client, NBDRequest *reque
     magic = ldl_be_p(buf);
     request->flags  = lduw_be_p(buf + 4);
     request->type   = lduw_be_p(buf + 6);
-    request->cookie = ldq_be_p(buf + 8);
+    request->handle = ldq_be_p(buf + 8);
     request->from   = ldq_be_p(buf + 16);
     request->len    = ldl_be_p(buf + 24);
 
@@ -1599,7 +1599,8 @@ static bool nbd_drained_poll(void *opaque)
              * enter it here so we don't depend on the client to wake it up.
              */
             if (client->recv_coroutine != NULL && client->read_yielding) {
-                qio_channel_wake_read(client->ioc);
+                qemu_aio_coroutine_enter(exp->common.ctx,
+                                         client->recv_coroutine);
             }
 
             return true;
@@ -1885,15 +1886,15 @@ static int coroutine_fn nbd_co_send_iov(NBDClient *client, struct iovec *iov,
 }
 
 static inline void set_be_simple_reply(NBDSimpleReply *reply, uint64_t error,
-                                       uint64_t cookie)
+                                       uint64_t handle)
 {
     stl_be_p(&reply->magic, NBD_SIMPLE_REPLY_MAGIC);
     stl_be_p(&reply->error, error);
-    stq_be_p(&reply->cookie, cookie);
+    stq_be_p(&reply->handle, handle);
 }
 
 static int coroutine_fn nbd_co_send_simple_reply(NBDClient *client,
-                                                 NBDRequest *request,
+                                                 uint64_t handle,
                                                  uint32_t error,
                                                  void *data,
                                                  size_t len,
@@ -1906,108 +1907,84 @@ static int coroutine_fn nbd_co_send_simple_reply(NBDClient *client,
         {.iov_base = data, .iov_len = len}
     };
 
-    assert(!len || !nbd_err);
-    assert(!client->structured_reply || request->type != NBD_CMD_READ);
-    trace_nbd_co_send_simple_reply(request->cookie, nbd_err,
-                                   nbd_err_lookup(nbd_err), len);
-    set_be_simple_reply(&reply, nbd_err, request->cookie);
+    trace_nbd_co_send_simple_reply(handle, nbd_err, nbd_err_lookup(nbd_err),
+                                   len);
+    set_be_simple_reply(&reply, nbd_err, handle);
 
-    return nbd_co_send_iov(client, iov, 2, errp);
+    return nbd_co_send_iov(client, iov, len ? 2 : 1, errp);
 }
 
-/*
- * Prepare the header of a reply chunk for network transmission.
- *
- * On input, @iov is partially initialized: iov[0].iov_base must point
- * to an uninitialized NBDReply, while the remaining @niov elements
- * (if any) must be ready for transmission.  This function then
- * populates iov[0] for transmission.
- */
-static inline void set_be_chunk(NBDClient *client, struct iovec *iov,
-                                size_t niov, uint16_t flags, uint16_t type,
-                                NBDRequest *request)
+static inline void set_be_chunk(NBDStructuredReplyChunk *chunk, uint16_t flags,
+                                uint16_t type, uint64_t handle, uint32_t length)
 {
-    /* TODO - handle structured vs. extended replies */
-    NBDStructuredReplyChunk *chunk = iov->iov_base;
-    size_t i, length = 0;
-
-    for (i = 1; i < niov; i++) {
-        length += iov[i].iov_len;
-    }
-    assert(length <= NBD_MAX_BUFFER_SIZE + sizeof(NBDStructuredReadData));
-
-    iov[0].iov_len = sizeof(*chunk);
     stl_be_p(&chunk->magic, NBD_STRUCTURED_REPLY_MAGIC);
     stw_be_p(&chunk->flags, flags);
     stw_be_p(&chunk->type, type);
-    stq_be_p(&chunk->cookie, request->cookie);
+    stq_be_p(&chunk->handle, handle);
     stl_be_p(&chunk->length, length);
 }
 
-static int coroutine_fn nbd_co_send_chunk_done(NBDClient *client,
-                                               NBDRequest *request,
-                                               Error **errp)
+static int coroutine_fn nbd_co_send_structured_done(NBDClient *client,
+                                                    uint64_t handle,
+                                                    Error **errp)
 {
-    NBDReply hdr;
+    NBDStructuredReplyChunk chunk;
     struct iovec iov[] = {
-        {.iov_base = &hdr},
+        {.iov_base = &chunk, .iov_len = sizeof(chunk)},
     };
 
-    trace_nbd_co_send_chunk_done(request->cookie);
-    set_be_chunk(client, iov, 1, NBD_REPLY_FLAG_DONE,
-                 NBD_REPLY_TYPE_NONE, request);
+    trace_nbd_co_send_structured_done(handle);
+    set_be_chunk(&chunk, NBD_REPLY_FLAG_DONE, NBD_REPLY_TYPE_NONE, handle, 0);
+
     return nbd_co_send_iov(client, iov, 1, errp);
 }
 
-static int coroutine_fn nbd_co_send_chunk_read(NBDClient *client,
-                                               NBDRequest *request,
-                                               uint64_t offset,
-                                               void *data,
-                                               size_t size,
-                                               bool final,
-                                               Error **errp)
+static int coroutine_fn nbd_co_send_structured_read(NBDClient *client,
+                                                    uint64_t handle,
+                                                    uint64_t offset,
+                                                    void *data,
+                                                    size_t size,
+                                                    bool final,
+                                                    Error **errp)
 {
-    NBDReply hdr;
     NBDStructuredReadData chunk;
     struct iovec iov[] = {
-        {.iov_base = &hdr},
         {.iov_base = &chunk, .iov_len = sizeof(chunk)},
         {.iov_base = data, .iov_len = size}
     };
 
     assert(size);
-    trace_nbd_co_send_chunk_read(request->cookie, offset, data, size);
-    set_be_chunk(client, iov, 3, final ? NBD_REPLY_FLAG_DONE : 0,
-                 NBD_REPLY_TYPE_OFFSET_DATA, request);
+    trace_nbd_co_send_structured_read(handle, offset, data, size);
+    set_be_chunk(&chunk.h, final ? NBD_REPLY_FLAG_DONE : 0,
+                 NBD_REPLY_TYPE_OFFSET_DATA, handle,
+                 sizeof(chunk) - sizeof(chunk.h) + size);
     stq_be_p(&chunk.offset, offset);
 
-    return nbd_co_send_iov(client, iov, 3, errp);
+    return nbd_co_send_iov(client, iov, 2, errp);
 }
-/*ebb*/
-static int coroutine_fn nbd_co_send_chunk_error(NBDClient *client,
-                                                NBDRequest *request,
-                                                uint32_t error,
-                                                const char *msg,
-                                                Error **errp)
+
+static int coroutine_fn nbd_co_send_structured_error(NBDClient *client,
+                                                     uint64_t handle,
+                                                     uint32_t error,
+                                                     const char *msg,
+                                                     Error **errp)
 {
-    NBDReply hdr;
     NBDStructuredError chunk;
     int nbd_err = system_errno_to_nbd_errno(error);
     struct iovec iov[] = {
-        {.iov_base = &hdr},
         {.iov_base = &chunk, .iov_len = sizeof(chunk)},
         {.iov_base = (char *)msg, .iov_len = msg ? strlen(msg) : 0},
     };
 
     assert(nbd_err);
-    trace_nbd_co_send_chunk_error(request->cookie, nbd_err,
-                                  nbd_err_lookup(nbd_err), msg ? msg : "");
-    set_be_chunk(client, iov, 3, NBD_REPLY_FLAG_DONE,
-                 NBD_REPLY_TYPE_ERROR, request);
+    trace_nbd_co_send_structured_error(handle, nbd_err,
+                                       nbd_err_lookup(nbd_err), msg ? msg : "");
+    set_be_chunk(&chunk.h, NBD_REPLY_FLAG_DONE, NBD_REPLY_TYPE_ERROR, handle,
+                 sizeof(chunk) - sizeof(chunk.h) + iov[1].iov_len);
     stl_be_p(&chunk.error, nbd_err);
-    stw_be_p(&chunk.message_length, iov[2].iov_len);
+    stw_be_p(&chunk.message_length, iov[1].iov_len);
 
-    return nbd_co_send_iov(client, iov, 3, errp);
+    return nbd_co_send_iov(client, iov, 1 + !!iov[1].iov_len, errp);
 }
 
 /* Do a sparse read and send the structured reply to the client.
@@ -2015,7 +1992,7 @@ static int coroutine_fn nbd_co_send_chunk_error(NBDClient *client,
  * reported to the client, at which point this function succeeds.
  */
 static int coroutine_fn nbd_co_send_sparse_read(NBDClient *client,
-                                                NBDRequest *request,
+                                                uint64_t handle,
                                                 uint64_t offset,
                                                 uint8_t *data,
                                                 size_t size,
@@ -2037,28 +2014,27 @@ static int coroutine_fn nbd_co_send_sparse_read(NBDClient *client,
             char *msg = g_strdup_printf("unable to check for holes: %s",
                                         strerror(-status));
 
-            ret = nbd_co_send_chunk_error(client, request, -status, msg, errp);
+            ret = nbd_co_send_structured_error(client, handle, -status, msg,
+                                               errp);
             g_free(msg);
             return ret;
         }
         assert(pnum && pnum <= size - progress);
         final = progress + pnum == size;
         if (status & BDRV_BLOCK_ZERO) {
-            NBDReply hdr;
             NBDStructuredReadHole chunk;
             struct iovec iov[] = {
-                {.iov_base = &hdr},
                 {.iov_base = &chunk, .iov_len = sizeof(chunk)},
             };
 
-            trace_nbd_co_send_chunk_read_hole(request->cookie,
-                                              offset + progress, pnum);
-            set_be_chunk(client, iov, 2,
-                         final ? NBD_REPLY_FLAG_DONE : 0,
-                         NBD_REPLY_TYPE_OFFSET_HOLE, request);
+            trace_nbd_co_send_structured_read_hole(handle, offset + progress,
+                                                   pnum);
+            set_be_chunk(&chunk.h, final ? NBD_REPLY_FLAG_DONE : 0,
+                         NBD_REPLY_TYPE_OFFSET_HOLE,
+                         handle, sizeof(chunk) - sizeof(chunk.h));
             stq_be_p(&chunk.offset, offset + progress);
             stl_be_p(&chunk.length, pnum);
-            ret = nbd_co_send_iov(client, iov, 2, errp);
+            ret = nbd_co_send_iov(client, iov, 1, errp);
         } else {
             ret = blk_co_pread(exp->common.blk, offset + progress, pnum,
                                data + progress, 0);
@@ -2066,8 +2042,9 @@ static int coroutine_fn nbd_co_send_sparse_read(NBDClient *client,
                 error_setg_errno(errp, -ret, "reading from file failed");
                 break;
             }
-            ret = nbd_co_send_chunk_read(client, request, offset + progress,
-                                         data + progress, pnum, final, errp);
+            ret = nbd_co_send_structured_read(client, handle, offset + progress,
+                                              data + progress, pnum, final,
+                                              errp);
         }
 
         if (ret < 0) {
@@ -2220,31 +2197,30 @@ static int coroutine_fn blockalloc_to_extents(BlockBackend *blk,
  * @last controls whether NBD_REPLY_FLAG_DONE is sent.
  */
 static int coroutine_fn
-nbd_co_send_extents(NBDClient *client, NBDRequest *request, NBDExtentArray *ea,
+nbd_co_send_extents(NBDClient *client, uint64_t handle, NBDExtentArray *ea,
                     bool last, uint32_t context_id, Error **errp)
 {
-    NBDReply hdr;
     NBDStructuredMeta chunk;
     struct iovec iov[] = {
-        {.iov_base = &hdr},
         {.iov_base = &chunk, .iov_len = sizeof(chunk)},
         {.iov_base = ea->extents, .iov_len = ea->count * sizeof(ea->extents[0])}
     };
 
     nbd_extent_array_convert_to_be(ea);
 
-    trace_nbd_co_send_extents(request->cookie, ea->count, context_id,
-                              ea->total_length, last);
-    set_be_chunk(client, iov, 3, last ? NBD_REPLY_FLAG_DONE : 0,
-                 NBD_REPLY_TYPE_BLOCK_STATUS, request);
+    trace_nbd_co_send_extents(handle, ea->count, context_id, ea->total_length,
+                              last);
+    set_be_chunk(&chunk.h, last ? NBD_REPLY_FLAG_DONE : 0,
+                 NBD_REPLY_TYPE_BLOCK_STATUS,
+                 handle, sizeof(chunk) - sizeof(chunk.h) + iov[1].iov_len);
     stl_be_p(&chunk.context_id, context_id);
 
-    return nbd_co_send_iov(client, iov, 3, errp);
+    return nbd_co_send_iov(client, iov, 2, errp);
 }
 
 /* Get block status from the exported device and send it to the client */
 static int
-coroutine_fn nbd_co_send_block_status(NBDClient *client, NBDRequest *request,
+coroutine_fn nbd_co_send_block_status(NBDClient *client, uint64_t handle,
                                       BlockBackend *blk, uint64_t offset,
                                       uint32_t length, bool dont_fragment,
                                       bool last, uint32_t context_id,
@@ -2260,11 +2236,11 @@ coroutine_fn nbd_co_send_block_status(NBDClient *client, NBDRequest *request,
         ret = blockalloc_to_extents(blk, offset, length, ea);
     }
     if (ret < 0) {
-        return nbd_co_send_chunk_error(client, request, -ret,
-                                       "can't get block status", errp);
+        return nbd_co_send_structured_error(
+                client, handle, -ret, "can't get block status", errp);
     }
 
-    return nbd_co_send_extents(client, request, ea, last, context_id, errp);
+    return nbd_co_send_extents(client, handle, ea, last, context_id, errp);
 }
 
 /* Populate @ea from a dirty bitmap. */
@@ -2299,20 +2275,17 @@ static void bitmap_to_extents(BdrvDirtyBitmap *bitmap,
     bdrv_dirty_bitmap_unlock(bitmap);
 }
 
-static int coroutine_fn nbd_co_send_bitmap(NBDClient *client,
-                                           NBDRequest *request,
-                                           BdrvDirtyBitmap *bitmap,
-                                           uint64_t offset,
-                                           uint32_t length, bool dont_fragment,
-                                           bool last, uint32_t context_id,
-                                           Error **errp)
+static int coroutine_fn nbd_co_send_bitmap(NBDClient *client, uint64_t handle,
+                                           BdrvDirtyBitmap *bitmap, uint64_t offset,
+                                           uint32_t length, bool dont_fragment, bool last,
+                                           uint32_t context_id, Error **errp)
 {
     unsigned int nb_extents = dont_fragment ? 1 : NBD_MAX_BLOCK_STATUS_EXTENTS;
     g_autoptr(NBDExtentArray) ea = nbd_extent_array_new(nb_extents);
 
     bitmap_to_extents(bitmap, offset, length, ea);
 
-    return nbd_co_send_extents(client, request, ea, last, context_id, errp);
+    return nbd_co_send_extents(client, handle, ea, last, context_id, errp);
 }
 
 /* nbd_co_receive_request
@@ -2336,7 +2309,7 @@ static int coroutine_fn nbd_co_receive_request(NBDRequestData *req, NBDRequest *
         return ret;
     }
 
-    trace_nbd_co_receive_request_decode_type(request->cookie, request->type,
+    trace_nbd_co_receive_request_decode_type(request->handle, request->type,
                                              nbd_cmd_lookup(request->type));
 
     if (request->type != NBD_CMD_WRITE) {
@@ -2377,7 +2350,7 @@ static int coroutine_fn nbd_co_receive_request(NBDRequestData *req, NBDRequest *
         }
         req->complete = true;
 
-        trace_nbd_co_receive_request_payload_received(request->cookie,
+        trace_nbd_co_receive_request_payload_received(request->handle,
                                                       request->len);
     }
 
@@ -2430,15 +2403,16 @@ static int coroutine_fn nbd_co_receive_request(NBDRequestData *req, NBDRequest *
  * Returns 0 if connection is still live, -errno on failure to talk to client
  */
 static coroutine_fn int nbd_send_generic_reply(NBDClient *client,
-                                               NBDRequest *request,
+                                               uint64_t handle,
                                                int ret,
                                                const char *error_msg,
                                                Error **errp)
 {
     if (client->structured_reply && ret < 0) {
-        return nbd_co_send_chunk_error(client, request, -ret, error_msg, errp);
+        return nbd_co_send_structured_error(client, handle, -ret, error_msg,
+                                            errp);
     } else {
-        return nbd_co_send_simple_reply(client, request, ret < 0 ? -ret : 0,
+        return nbd_co_send_simple_reply(client, handle, ret < 0 ? -ret : 0,
                                         NULL, 0, errp);
     }
 }
@@ -2458,7 +2432,7 @@ static coroutine_fn int nbd_do_cmd_read(NBDClient *client, NBDRequest *request,
     if (request->flags & NBD_CMD_FLAG_FUA) {
         ret = blk_co_flush(exp->common.blk);
         if (ret < 0) {
-            return nbd_send_generic_reply(client, request, ret,
+            return nbd_send_generic_reply(client, request->handle, ret,
                                           "flush failed", errp);
         }
     }
@@ -2466,25 +2440,26 @@ static coroutine_fn int nbd_do_cmd_read(NBDClient *client, NBDRequest *request,
     if (client->structured_reply && !(request->flags & NBD_CMD_FLAG_DF) &&
         request->len)
     {
-        return nbd_co_send_sparse_read(client, request, request->from,
+        return nbd_co_send_sparse_read(client, request->handle, request->from,
                                        data, request->len, errp);
     }
 
     ret = blk_co_pread(exp->common.blk, request->from, request->len, data, 0);
     if (ret < 0) {
-        return nbd_send_generic_reply(client, request, ret,
+        return nbd_send_generic_reply(client, request->handle, ret,
                                       "reading from file failed", errp);
     }
 
     if (client->structured_reply) {
         if (request->len) {
-            return nbd_co_send_chunk_read(client, request, request->from, data,
-                                          request->len, true, errp);
+            return nbd_co_send_structured_read(client, request->handle,
+                                               request->from, data,
+                                               request->len, true, errp);
         } else {
-            return nbd_co_send_chunk_done(client, request, errp);
+            return nbd_co_send_structured_done(client, request->handle, errp);
         }
     } else {
-        return nbd_co_send_simple_reply(client, request, 0,
+        return nbd_co_send_simple_reply(client, request->handle, 0,
                                         data, request->len, errp);
     }
 }
@@ -2507,7 +2482,7 @@ static coroutine_fn int nbd_do_cmd_cache(NBDClient *client, NBDRequest *request,
     ret = blk_co_preadv(exp->common.blk, request->from, request->len,
                         NULL, BDRV_REQ_COPY_ON_READ | BDRV_REQ_PREFETCH);
 
-    return nbd_send_generic_reply(client, request, ret,
+    return nbd_send_generic_reply(client, request->handle, ret,
                                   "caching data failed", errp);
 }
 
@@ -2538,7 +2513,7 @@ static coroutine_fn int nbd_handle_request(NBDClient *client,
         }
         ret = blk_co_pwrite(exp->common.blk, request->from, request->len, data,
                             flags);
-        return nbd_send_generic_reply(client, request, ret,
+        return nbd_send_generic_reply(client, request->handle, ret,
                                       "writing to file failed", errp);
 
     case NBD_CMD_WRITE_ZEROES:
@@ -2554,7 +2529,7 @@ static coroutine_fn int nbd_handle_request(NBDClient *client,
         }
         ret = blk_co_pwrite_zeroes(exp->common.blk, request->from, request->len,
                                    flags);
-        return nbd_send_generic_reply(client, request, ret,
+        return nbd_send_generic_reply(client, request->handle, ret,
                                       "writing to file failed", errp);
 
     case NBD_CMD_DISC:
@@ -2563,7 +2538,7 @@ static coroutine_fn int nbd_handle_request(NBDClient *client,
 
     case NBD_CMD_FLUSH:
         ret = blk_co_flush(exp->common.blk);
-        return nbd_send_generic_reply(client, request, ret,
+        return nbd_send_generic_reply(client, request->handle, ret,
                                       "flush failed", errp);
 
     case NBD_CMD_TRIM:
@@ -2571,12 +2546,12 @@ static coroutine_fn int nbd_handle_request(NBDClient *client,
         if (ret >= 0 && request->flags & NBD_CMD_FLAG_FUA) {
             ret = blk_co_flush(exp->common.blk);
         }
-        return nbd_send_generic_reply(client, request, ret,
+        return nbd_send_generic_reply(client, request->handle, ret,
                                       "discard failed", errp);
 
     case NBD_CMD_BLOCK_STATUS:
         if (!request->len) {
-            return nbd_send_generic_reply(client, request, -EINVAL,
+            return nbd_send_generic_reply(client, request->handle, -EINVAL,
                                           "need non-zero length", errp);
         }
         if (client->export_meta.count) {
@@ -2584,7 +2559,7 @@ static coroutine_fn int nbd_handle_request(NBDClient *client,
             int contexts_remaining = client->export_meta.count;
 
             if (client->export_meta.base_allocation) {
-                ret = nbd_co_send_block_status(client, request,
+                ret = nbd_co_send_block_status(client, request->handle,
                                                exp->common.blk,
                                                request->from,
                                                request->len, dont_fragment,
@@ -2597,7 +2572,7 @@ static coroutine_fn int nbd_handle_request(NBDClient *client,
             }
 
             if (client->export_meta.allocation_depth) {
-                ret = nbd_co_send_block_status(client, request,
+                ret = nbd_co_send_block_status(client, request->handle,
                                                exp->common.blk,
                                                request->from, request->len,
                                                dont_fragment,
@@ -2613,7 +2588,7 @@ static coroutine_fn int nbd_handle_request(NBDClient *client,
                 if (!client->export_meta.bitmaps[i]) {
                     continue;
                 }
-                ret = nbd_co_send_bitmap(client, request,
+                ret = nbd_co_send_bitmap(client, request->handle,
                                          client->exp->export_bitmaps[i],
                                          request->from, request->len,
                                          dont_fragment, !--contexts_remaining,
@@ -2627,7 +2602,7 @@ static coroutine_fn int nbd_handle_request(NBDClient *client,
 
             return 0;
         } else {
-            return nbd_send_generic_reply(client, request, -EINVAL,
+            return nbd_send_generic_reply(client, request->handle, -EINVAL,
                                           "CMD_BLOCK_STATUS not negotiated",
                                           errp);
         }
@@ -2635,7 +2610,7 @@ static coroutine_fn int nbd_handle_request(NBDClient *client,
     default:
         msg = g_strdup_printf("invalid request type (%" PRIu32 ") received",
                               request->type);
-        ret = nbd_send_generic_reply(client, request, -EINVAL, msg,
+        ret = nbd_send_generic_reply(client, request->handle, -EINVAL, msg,
                                      errp);
         g_free(msg);
         return ret;
@@ -2698,7 +2673,7 @@ static coroutine_fn void nbd_trip(void *opaque)
         Error *export_err = local_err;
 
         local_err = NULL;
-        ret = nbd_send_generic_reply(client, &request, -EINVAL,
+        ret = nbd_send_generic_reply(client, request.handle, -EINVAL,
                                      error_get_pretty(export_err), &local_err);
         error_free(export_err);
     } else {

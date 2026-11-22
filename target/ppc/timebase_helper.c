@@ -144,19 +144,6 @@ void helper_store_booke_tsr(CPUPPCState *env, target_ulong val)
     store_booke_tsr(env, val);
 }
 
-#if defined(TARGET_PPC64)
-/* POWER processor Timebase Facility */
-target_ulong helper_load_tfmr(CPUPPCState *env)
-{
-    return env->spr[SPR_TFMR];
-}
-
-void helper_store_tfmr(CPUPPCState *env, target_ulong val)
-{
-    env->spr[SPR_TFMR] = val;
-}
-#endif
-
 /*****************************************************************************/
 /* Embedded PowerPC specific helpers */
 

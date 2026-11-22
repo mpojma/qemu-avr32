@@ -30,8 +30,8 @@
 #include "qemu/cacheinfo.h"
 #include "qemu/qtree.h"
 #include "qapi/error.h"
+#include "exec/exec-all.h"
 #include "tcg/tcg.h"
-#include "exec/translation-block.h"
 #include "tcg-internal.h"
 
 
@@ -505,14 +505,6 @@ static int alloc_code_gen_buffer(size_t tb_size, int splitwx, Error **errp)
     return PROT_READ | PROT_WRITE;
 }
 #elif defined(_WIN32)
-/*
- * Local source-level compatibility with Unix.
- * Used by tcg_region_init below.
- */
-#define PROT_READ   1
-#define PROT_WRITE  2
-#define PROT_EXEC   4
-
 static int alloc_code_gen_buffer(size_t size, int splitwx, Error **errp)
 {
     void *buf;
@@ -533,7 +525,7 @@ static int alloc_code_gen_buffer(size_t size, int splitwx, Error **errp)
     region.start_aligned = buf;
     region.total_size = size;
 
-    return PROT_READ | PROT_WRITE | PROT_EXEC;
+    return PAGE_READ | PAGE_WRITE | PAGE_EXEC;
 }
 #else
 static int alloc_code_gen_buffer_anon(size_t size, int prot,
@@ -802,10 +794,10 @@ void tcg_region_init(size_t tb_size, int splitwx, unsigned max_cpus)
      * buffer -- let that one use hugepages throughout.
      * Work with the page protections set up with the initial mapping.
      */
-    need_prot = PROT_READ | PROT_WRITE;
+    need_prot = PAGE_READ | PAGE_WRITE;
 #ifndef CONFIG_TCG_INTERPRETER
     if (tcg_splitwx_diff == 0) {
-        need_prot |= PROT_EXEC;
+        need_prot |= PAGE_EXEC;
     }
 #endif
     for (size_t i = 0, n = region.n; i < n; i++) {
@@ -815,9 +807,9 @@ void tcg_region_init(size_t tb_size, int splitwx, unsigned max_cpus)
         if (have_prot != need_prot) {
             int rc;
 
-            if (need_prot == (PROT_READ | PROT_WRITE | PROT_EXEC)) {
+            if (need_prot == (PAGE_READ | PAGE_WRITE | PAGE_EXEC)) {
                 rc = qemu_mprotect_rwx(start, end - start);
-            } else if (need_prot == (PROT_READ | PROT_WRITE)) {
+            } else if (need_prot == (PAGE_READ | PAGE_WRITE)) {
                 rc = qemu_mprotect_rw(start, end - start);
             } else {
                 g_assert_not_reached();

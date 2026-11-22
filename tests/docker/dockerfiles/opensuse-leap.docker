@@ -81,14 +81,13 @@ RUN zypper update -y && \
            lttng-ust-devel \
            lzo-devel \
            make \
-           mtools \
+           mkisofs \
            ncat \
            ncurses-devel \
            ninja \
            openssh \
            pam-devel \
            pcre-devel-static \
-           pipewire-devel \
            pkgconfig \
            python39-base \
            python39-pip \
@@ -112,7 +111,6 @@ RUN zypper update -y && \
            which \
            xen-devel \
            xfsprogs-devel \
-           xorriso \
            zlib-devel \
            zlib-devel-static \
            zstd && \

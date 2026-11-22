@@ -165,13 +165,9 @@ typedef struct TaskState {
 } TaskState;
 
 abi_long do_brk(abi_ulong new_brk);
-int do_guest_openat(CPUArchState *cpu_env, int dirfd, const char *pathname,
-                    int flags, mode_t mode, bool safe);
-ssize_t do_guest_readlink(const char *pathname, char *buf, size_t bufsiz);
 
 /* user access */
 
-#define VERIFY_NONE  0
 #define VERIFY_READ  PAGE_READ
 #define VERIFY_WRITE (PAGE_READ | PAGE_WRITE)
 
@@ -182,7 +178,7 @@ static inline bool access_ok_untagged(int type, abi_ulong addr, abi_ulong size)
         : !guest_range_valid_untagged(addr, size)) {
         return false;
     }
-    return page_check_range((target_ulong)addr, size, type);
+    return page_check_range((target_ulong)addr, size, type) == 0;
 }
 
 static inline bool access_ok(CPUState *cpu, int type,

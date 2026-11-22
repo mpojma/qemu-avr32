@@ -359,7 +359,10 @@ static void handle_arg_cpu(const char *arg)
 {
     cpu_model = strdup(arg);
     if (cpu_model == NULL || is_help_option(cpu_model)) {
-        list_cpus();
+        /* XXX: implement xxx_cpu_list for targets that still miss it */
+#if defined(cpu_list)
+        cpu_list();
+#endif
         exit(EXIT_FAILURE);
     }
 }
@@ -692,16 +695,8 @@ int main(int argc, char **argv, char **envp)
 
     envlist = envlist_create();
 
-    /*
-     * add current environment into the list
-     * envlist_setenv adds to the front of the list; to preserve environ
-     * order add from back to front
-     */
+    /* add current environment into the list */
     for (wrk = environ; *wrk != NULL; wrk++) {
-        continue;
-    }
-    while (wrk != environ) {
-        wrk--;
         (void) envlist_setenv(envlist, *wrk);
     }
 

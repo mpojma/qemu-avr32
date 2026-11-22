@@ -408,7 +408,7 @@ bool postcopy_ram_supported_by_host(MigrationIncomingState *mis, Error **errp)
     /*
      * We don't support postcopy with some type of ramblocks.
      *
-     * NOTE: we explicitly ignored migrate_ram_is_ignored() instead we checked
+     * NOTE: we explicitly ignored ramblock_is_ignored() instead we checked
      * all possible ramblocks.  This is because this function can be called
      * when creating the migration object, during the phase RAM_MIGRATABLE
      * is not even properly set for all the ramblocks.
@@ -1632,7 +1632,7 @@ postcopy_preempt_send_channel_new(QIOTask *task, gpointer opaque)
     }
 
     if (migrate_channel_requires_tls_upgrade(ioc)) {
-        tioc = migration_tls_client_create(ioc, s->hostname, &local_err);
+        tioc = migration_tls_client_create(s, ioc, s->hostname, &local_err);
         if (!tioc) {
             goto out;
         }

@@ -462,10 +462,6 @@ class QemuStorageDaemon:
         assert self._qmp is not None
         return self._qmp.cmd(cmd, args)
 
-    def get_qmp(self) -> QEMUMonitorProtocol:
-        assert self._qmp is not None
-        return self._qmp
-
     def stop(self, kill_signal=15):
         self._p.send_signal(kill_signal)
         self._p.wait()
@@ -1421,7 +1417,7 @@ def _verify_virtio_blk() -> None:
     if 'virtio-blk' not in out:
         notrun('Missing virtio-blk in QEMU binary')
 
-def verify_virtio_scsi_pci_or_ccw() -> None:
+def _verify_virtio_scsi_pci_or_ccw() -> None:
     out = qemu_pipe('-M', 'none', '-device', 'help')
     if 'virtio-scsi-pci' not in out and 'virtio-scsi-ccw' not in out:
         notrun('Missing virtio-scsi-pci or virtio-scsi-ccw in QEMU binary')

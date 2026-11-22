@@ -14,7 +14,6 @@
 # The supported algorithm types of a crypto device.
 #
 # @sym: symmetric encryption
-#
 # @asym: asymmetric Encryption
 #
 # Since: 8.0
@@ -40,9 +39,7 @@
 # The crypto device backend type
 #
 # @builtin: the QEMU builtin support
-#
 # @vhost-user: vhost-user
-#
 # @lkcf: Linux kernel cryptographic framework
 #
 # Since: 8.0
@@ -75,7 +72,7 @@
 #
 # @service: supported service types of a crypto device
 #
-# @client: the additional information of the crypto device
+# @client: the additional infomation of the crypto device
 #
 # Since: 8.0
 ##

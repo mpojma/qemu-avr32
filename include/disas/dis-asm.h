@@ -214,6 +214,10 @@ enum bfd_architecture
   bfd_arch_mn10200,    /* Matsushita MN10200 */
   bfd_arch_mn10300,    /* Matsushita MN10300 */
   bfd_arch_avr,        /* AVR microcontrollers */
+
+  bfd_arch_avr32,
+#define bfs_mach_avr32expc   50
+
 #define bfd_mach_avr1       1
 #define bfd_mach_avr2       2
 #define bfd_mach_avr25      25
@@ -397,7 +401,7 @@ typedef struct disassemble_info {
   char * disassembler_options;
 
   /* Field intended to be used by targets in any way they deem suitable.  */
-  void *target_info;
+  int64_t target_info;
 
   /* Options for Capstone disassembly.  */
   int cap_arch;

@@ -259,17 +259,24 @@
 # define smp_mb__after_rmw() smp_mb()
 #endif
 
-/*
- * On some architectures, qatomic_set_mb is more efficient than a store
- * plus a fence.
+/* qatomic_mb_read/set semantics map Java volatile variables. They are
+ * less expensive on some platforms (notably POWER) than fully
+ * sequentially consistent operations.
+ *
+ * As long as they are used as paired operations they are safe to
+ * use. See docs/devel/atomics.rst for more discussion.
  */
+
+#define qatomic_mb_read(ptr)                             \
+    qatomic_load_acquire(ptr)
 
 #if !defined(QEMU_SANITIZE_THREAD) && \
     (defined(__i386__) || defined(__x86_64__) || defined(__s390x__))
-# define qatomic_set_mb(ptr, i) \
+/* This is more efficient than a store plus a fence.  */
+# define qatomic_mb_set(ptr, i) \
     ({ (void)qatomic_xchg(ptr, i); smp_mb__after_rmw(); })
 #else
-# define qatomic_set_mb(ptr, i) \
+# define qatomic_mb_set(ptr, i) \
    ({ qatomic_store_release(ptr, i); smp_mb(); })
 #endif
 

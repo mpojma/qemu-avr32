@@ -23,19 +23,19 @@
  */
 
 #include "qemu/osdep.h"
-#include "translate.h"
+#include "cpu.h"
 #include "internal.h"
+#include "tcg/tcg-op.h"
+#include "exec/translator.h"
 #include "exec/helper-proto.h"
-#include "exec/translation-block.h"
+#include "exec/helper-gen.h"
 #include "semihosting/semihost.h"
+
 #include "trace.h"
-#include "disas/disas.h"
+#include "exec/log.h"
+#include "qemu/qemu-print.h"
 #include "fpu_helper.h"
-
-#define HELPER_H "helper.h"
-#include "exec/helper-info.c.inc"
-#undef  HELPER_H
-
+#include "translate.h"
 
 /*
  * Many sysemu-only helpers are not reachable for user-only.
@@ -1210,6 +1210,8 @@ static TCGv_i32 hflags;
 TCGv_i32 fpu_fcr0, fpu_fcr31;
 TCGv_i64 fpu_f64[32];
 
+#include "exec/gen-icount.h"
+
 static const char regnames_HI[][4] = {
     "HI0", "HI1", "HI2", "HI3",
 };
@@ -1947,13 +1949,13 @@ FOP_CONDNS(s, FMT_S, 32, gen_store_fpr32(ctx, fp0, fd))
 
 /* load/store instructions. */
 #ifdef CONFIG_USER_ONLY
-#define OP_LD_ATOMIC(insn, memop)                                          \
+#define OP_LD_ATOMIC(insn, fname)                                          \
 static inline void op_ld_##insn(TCGv ret, TCGv arg1, int mem_idx,          \
                                 DisasContext *ctx)                         \
 {                                                                          \
     TCGv t0 = tcg_temp_new();                                              \
     tcg_gen_mov_tl(t0, arg1);                                              \
-    tcg_gen_qemu_ld_tl(ret, arg1, ctx->mem_idx, memop);                    \
+    tcg_gen_qemu_##fname(ret, arg1, ctx->mem_idx);                         \
     tcg_gen_st_tl(t0, cpu_env, offsetof(CPUMIPSState, lladdr));            \
     tcg_gen_st_tl(ret, cpu_env, offsetof(CPUMIPSState, llval));            \
 }
@@ -1965,9 +1967,9 @@ static inline void op_ld_##insn(TCGv ret, TCGv arg1, int mem_idx,          \
     gen_helper_##insn(ret, cpu_env, arg1, tcg_constant_i32(mem_idx));      \
 }
 #endif
-OP_LD_ATOMIC(ll, MO_TESL);
+OP_LD_ATOMIC(ll, ld32s);
 #if defined(TARGET_MIPS64)
-OP_LD_ATOMIC(lld, MO_TEUQ);
+OP_LD_ATOMIC(lld, ld64);
 #endif
 #undef OP_LD_ATOMIC
 
@@ -5663,8 +5665,9 @@ static void gen_mfc0(DisasContext *ctx, TCGv arg, int reg, int sel)
         switch (sel) {
         case CP0_REG09__COUNT:
             /* Mark as an IO operation because we read the time.  */
-            translator_io_start(&ctx->base);
-
+            if (tb_cflags(ctx->base.tb) & CF_USE_ICOUNT) {
+                gen_io_start();
+            }
             gen_helper_mfc0_count(arg, cpu_env);
             /*
              * Break the TB to be able to take timer interrupts immediately
@@ -6103,13 +6106,14 @@ cp0_unimplemented:
 static void gen_mtc0(DisasContext *ctx, TCGv arg, int reg, int sel)
 {
     const char *register_name = "invalid";
-    bool icount;
 
     if (sel != 0) {
         check_insn(ctx, ISA_MIPS_R1);
     }
 
-    icount = translator_io_start(&ctx->base);
+    if (tb_cflags(ctx->base.tb) & CF_USE_ICOUNT) {
+        gen_io_start();
+    }
 
     switch (reg) {
     case CP0_REGISTER_00:
@@ -6847,7 +6851,7 @@ static void gen_mtc0(DisasContext *ctx, TCGv arg, int reg, int sel)
     trace_mips_translate_c0("mtc0", register_name, reg, sel);
 
     /* For simplicity assume that all writes can cause interrupts.  */
-    if (icount) {
+    if (tb_cflags(ctx->base.tb) & CF_USE_ICOUNT) {
         /*
          * DISAS_STOP isn't sufficient, we need to ensure we break out of
          * translated code to check for pending interrupts.
@@ -7164,7 +7168,9 @@ static void gen_dmfc0(DisasContext *ctx, TCGv arg, int reg, int sel)
         switch (sel) {
         case CP0_REG09__COUNT:
             /* Mark as an IO operation because we read the time.  */
-            translator_io_start(&ctx->base);
+            if (tb_cflags(ctx->base.tb) & CF_USE_ICOUNT) {
+                gen_io_start();
+            }
             gen_helper_mfc0_count(arg, cpu_env);
             /*
              * Break the TB to be able to take timer interrupts immediately
@@ -7590,13 +7596,14 @@ cp0_unimplemented:
 static void gen_dmtc0(DisasContext *ctx, TCGv arg, int reg, int sel)
 {
     const char *register_name = "invalid";
-    bool icount;
 
     if (sel != 0) {
         check_insn(ctx, ISA_MIPS_R1);
     }
 
-    icount = translator_io_start(&ctx->base);
+    if (tb_cflags(ctx->base.tb) & CF_USE_ICOUNT) {
+        gen_io_start();
+    }
 
     switch (reg) {
     case CP0_REGISTER_00:
@@ -8324,7 +8331,7 @@ static void gen_dmtc0(DisasContext *ctx, TCGv arg, int reg, int sel)
     trace_mips_translate_c0("dmtc0", register_name, reg, sel);
 
     /* For simplicity assume that all writes can cause interrupts.  */
-    if (icount) {
+    if (tb_cflags(ctx->base.tb) & CF_USE_ICOUNT) {
         /*
          * DISAS_STOP isn't sufficient, we need to ensure we break out of
          * translated code to check for pending interrupts.
@@ -11135,7 +11142,9 @@ void gen_rdhwr(DisasContext *ctx, int rt, int rd, int sel)
         gen_store_gpr(t0, rt);
         break;
     case 2:
-        translator_io_start(&ctx->base);
+        if (tb_cflags(ctx->base.tb) & CF_USE_ICOUNT) {
+            gen_io_start();
+        }
         gen_helper_rdhwr_cc(t0, cpu_env);
         gen_store_gpr(t0, rt);
         /*
@@ -14644,9 +14653,12 @@ static bool decode_opc_legacy(CPUMIPSState *env, DisasContext *ctx)
         }
 #endif
         if (TARGET_LONG_BITS == 32 && (ctx->insn_flags & ASE_MXU)) {
-            if (decode_ase_mxu(ctx, ctx->opcode)) {
-                break;
+            if (MASK_SPECIAL2(ctx->opcode) == OPC_MUL) {
+                gen_arith(ctx, OPC_MUL, rd, rs, rt);
+            } else {
+                decode_ase_mxu(ctx, ctx->opcode);
             }
+            break;
         }
         decode_opc_special2_legacy(env, ctx);
         break;
@@ -15349,9 +15361,6 @@ static void decode_opc(CPUMIPSState *env, DisasContext *ctx)
         return;
     }
 #if defined(TARGET_MIPS64)
-    if (ase_lcsr_available(env) && decode_ase_lcsr(ctx, ctx->opcode)) {
-        return;
-    }
     if (cpu_supports_isa(env, INSN_OCTEON) && decode_ext_octeon(ctx, ctx->opcode)) {
         return;
     }

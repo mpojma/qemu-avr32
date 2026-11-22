@@ -132,7 +132,6 @@ static void ppc_core99_reset(void *opaque)
 static void ppc_core99_init(MachineState *machine)
 {
     Core99MachineState *core99_machine = CORE99_MACHINE(machine);
-    MachineClass *mc = MACHINE_GET_CLASS(machine);
     PowerPCCPU *cpu = NULL;
     CPUPPCState *env = NULL;
     char *filename;
@@ -445,7 +444,7 @@ static void ppc_core99_init(MachineState *machine)
     }
 
     for (i = 0; i < nb_nics; i++) {
-        pci_nic_init_nofail(&nd_table[i], pci_bus, mc->default_nic, NULL);
+        pci_nic_init_nofail(&nd_table[i], pci_bus, "sungem", NULL);
     }
 
     /* The NewWorld NVRAM is not located in the MacIO device */
@@ -578,7 +577,6 @@ static void core99_machine_class_init(ObjectClass *oc, void *data)
     mc->max_cpus = 1;
     mc->default_boot_order = "cd";
     mc->default_display = "std";
-    mc->default_nic = "sungem";
     mc->kvm_type = core99_kvm_type;
 #ifdef TARGET_PPC64
     mc->default_cpu_type = POWERPC_CPU_TYPE_NAME("970fx_v3.1");

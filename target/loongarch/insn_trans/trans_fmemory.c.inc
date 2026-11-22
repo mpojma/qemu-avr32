@@ -13,7 +13,6 @@ static void maybe_nanbox_load(TCGv freg, MemOp mop)
 static bool gen_fload_i(DisasContext *ctx, arg_fr_i *a, MemOp mop)
 {
     TCGv addr = gpr_src(ctx, a->rj, EXT_NONE);
-    TCGv dest = get_fpr(ctx, a->fd);
 
     CHECK_FPE;
 
@@ -23,9 +22,8 @@ static bool gen_fload_i(DisasContext *ctx, arg_fr_i *a, MemOp mop)
         addr = temp;
     }
 
-    tcg_gen_qemu_ld_tl(dest, addr, ctx->mem_idx, mop);
-    maybe_nanbox_load(dest, mop);
-    set_fpr(a->fd, dest);
+    tcg_gen_qemu_ld_tl(cpu_fpr[a->fd], addr, ctx->mem_idx, mop);
+    maybe_nanbox_load(cpu_fpr[a->fd], mop);
 
     return true;
 }
@@ -33,7 +31,6 @@ static bool gen_fload_i(DisasContext *ctx, arg_fr_i *a, MemOp mop)
 static bool gen_fstore_i(DisasContext *ctx, arg_fr_i *a, MemOp mop)
 {
     TCGv addr = gpr_src(ctx, a->rj, EXT_NONE);
-    TCGv src = get_fpr(ctx, a->fd);
 
     CHECK_FPE;
 
@@ -43,8 +40,7 @@ static bool gen_fstore_i(DisasContext *ctx, arg_fr_i *a, MemOp mop)
         addr = temp;
     }
 
-    tcg_gen_qemu_st_tl(src, addr, ctx->mem_idx, mop);
-
+    tcg_gen_qemu_st_tl(cpu_fpr[a->fd], addr, ctx->mem_idx, mop);
     return true;
 }
 
@@ -52,16 +48,14 @@ static bool gen_floadx(DisasContext *ctx, arg_frr *a, MemOp mop)
 {
     TCGv src1 = gpr_src(ctx, a->rj, EXT_NONE);
     TCGv src2 = gpr_src(ctx, a->rk, EXT_NONE);
-    TCGv dest = get_fpr(ctx, a->fd);
     TCGv addr;
 
     CHECK_FPE;
 
     addr = tcg_temp_new();
     tcg_gen_add_tl(addr, src1, src2);
-    tcg_gen_qemu_ld_tl(dest, addr, ctx->mem_idx, mop);
-    maybe_nanbox_load(dest, mop);
-    set_fpr(a->fd, dest);
+    tcg_gen_qemu_ld_tl(cpu_fpr[a->fd], addr, ctx->mem_idx, mop);
+    maybe_nanbox_load(cpu_fpr[a->fd], mop);
 
     return true;
 }
@@ -70,14 +64,13 @@ static bool gen_fstorex(DisasContext *ctx, arg_frr *a, MemOp mop)
 {
     TCGv src1 = gpr_src(ctx, a->rj, EXT_NONE);
     TCGv src2 = gpr_src(ctx, a->rk, EXT_NONE);
-    TCGv src3 = get_fpr(ctx, a->fd);
     TCGv addr;
 
     CHECK_FPE;
 
     addr = tcg_temp_new();
     tcg_gen_add_tl(addr, src1, src2);
-    tcg_gen_qemu_st_tl(src3, addr, ctx->mem_idx, mop);
+    tcg_gen_qemu_st_tl(cpu_fpr[a->fd], addr, ctx->mem_idx, mop);
 
     return true;
 }
@@ -86,7 +79,6 @@ static bool gen_fload_gt(DisasContext *ctx, arg_frr *a, MemOp mop)
 {
     TCGv src1 = gpr_src(ctx, a->rj, EXT_NONE);
     TCGv src2 = gpr_src(ctx, a->rk, EXT_NONE);
-    TCGv dest = get_fpr(ctx, a->fd);
     TCGv addr;
 
     CHECK_FPE;
@@ -94,9 +86,8 @@ static bool gen_fload_gt(DisasContext *ctx, arg_frr *a, MemOp mop)
     addr = tcg_temp_new();
     gen_helper_asrtgt_d(cpu_env, src1, src2);
     tcg_gen_add_tl(addr, src1, src2);
-    tcg_gen_qemu_ld_tl(dest, addr, ctx->mem_idx, mop);
-    maybe_nanbox_load(dest, mop);
-    set_fpr(a->fd, dest);
+    tcg_gen_qemu_ld_tl(cpu_fpr[a->fd], addr, ctx->mem_idx, mop);
+    maybe_nanbox_load(cpu_fpr[a->fd], mop);
 
     return true;
 }
@@ -105,7 +96,6 @@ static bool gen_fstore_gt(DisasContext *ctx, arg_frr *a, MemOp mop)
 {
     TCGv src1 = gpr_src(ctx, a->rj, EXT_NONE);
     TCGv src2 = gpr_src(ctx, a->rk, EXT_NONE);
-    TCGv src3 = get_fpr(ctx, a->fd);
     TCGv addr;
 
     CHECK_FPE;
@@ -113,7 +103,7 @@ static bool gen_fstore_gt(DisasContext *ctx, arg_frr *a, MemOp mop)
     addr = tcg_temp_new();
     gen_helper_asrtgt_d(cpu_env, src1, src2);
     tcg_gen_add_tl(addr, src1, src2);
-    tcg_gen_qemu_st_tl(src3, addr, ctx->mem_idx, mop);
+    tcg_gen_qemu_st_tl(cpu_fpr[a->fd], addr, ctx->mem_idx, mop);
 
     return true;
 }
@@ -122,7 +112,6 @@ static bool gen_fload_le(DisasContext *ctx, arg_frr *a, MemOp mop)
 {
     TCGv src1 = gpr_src(ctx, a->rj, EXT_NONE);
     TCGv src2 = gpr_src(ctx, a->rk, EXT_NONE);
-    TCGv dest = get_fpr(ctx, a->fd);
     TCGv addr;
 
     CHECK_FPE;
@@ -130,9 +119,8 @@ static bool gen_fload_le(DisasContext *ctx, arg_frr *a, MemOp mop)
     addr = tcg_temp_new();
     gen_helper_asrtle_d(cpu_env, src1, src2);
     tcg_gen_add_tl(addr, src1, src2);
-    tcg_gen_qemu_ld_tl(dest, addr, ctx->mem_idx, mop);
-    maybe_nanbox_load(dest, mop);
-    set_fpr(a->fd, dest);
+    tcg_gen_qemu_ld_tl(cpu_fpr[a->fd], addr, ctx->mem_idx, mop);
+    maybe_nanbox_load(cpu_fpr[a->fd], mop);
 
     return true;
 }
@@ -141,7 +129,6 @@ static bool gen_fstore_le(DisasContext *ctx, arg_frr *a, MemOp mop)
 {
     TCGv src1 = gpr_src(ctx, a->rj, EXT_NONE);
     TCGv src2 = gpr_src(ctx, a->rk, EXT_NONE);
-    TCGv src3 = get_fpr(ctx, a->fd);
     TCGv addr;
 
     CHECK_FPE;
@@ -149,7 +136,7 @@ static bool gen_fstore_le(DisasContext *ctx, arg_frr *a, MemOp mop)
     addr = tcg_temp_new();
     gen_helper_asrtle_d(cpu_env, src1, src2);
     tcg_gen_add_tl(addr, src1, src2);
-    tcg_gen_qemu_st_tl(src3, addr, ctx->mem_idx, mop);
+    tcg_gen_qemu_st_tl(cpu_fpr[a->fd], addr, ctx->mem_idx, mop);
 
     return true;
 }

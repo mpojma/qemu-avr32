@@ -842,15 +842,12 @@ void xen_device_set_event_channel_context(XenDevice *xendev,
     }
 
     if (channel->ctx)
-        aio_set_fd_handler(channel->ctx, qemu_xen_evtchn_fd(channel->xeh),
+        aio_set_fd_handler(channel->ctx, qemu_xen_evtchn_fd(channel->xeh), true,
                            NULL, NULL, NULL, NULL, NULL);
 
     channel->ctx = ctx;
-    if (ctx) {
-        aio_set_fd_handler(channel->ctx, qemu_xen_evtchn_fd(channel->xeh),
-                           xen_device_event, NULL, xen_device_poll, NULL,
-                           channel);
-    }
+    aio_set_fd_handler(channel->ctx, qemu_xen_evtchn_fd(channel->xeh), true,
+                       xen_device_event, NULL, xen_device_poll, NULL, channel);
 }
 
 XenEventChannel *xen_device_bind_event_channel(XenDevice *xendev,
@@ -923,10 +920,8 @@ void xen_device_unbind_event_channel(XenDevice *xendev,
 
     QLIST_REMOVE(channel, list);
 
-    if (channel->ctx) {
-        aio_set_fd_handler(channel->ctx, qemu_xen_evtchn_fd(channel->xeh),
-                           NULL, NULL, NULL, NULL, NULL);
-    }
+    aio_set_fd_handler(channel->ctx, qemu_xen_evtchn_fd(channel->xeh), true,
+                       NULL, NULL, NULL, NULL, NULL);
 
     if (qemu_xen_evtchn_unbind(channel->xeh, channel->local_port) < 0) {
         error_setg_errno(errp, errno, "xenevtchn_unbind failed");

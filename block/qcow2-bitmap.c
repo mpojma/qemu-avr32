@@ -283,9 +283,10 @@ static int free_bitmap_clusters(BlockDriverState *bs, Qcow2BitmapTable *tb)
 /* load_bitmap_data
  * @bitmap_table entries must satisfy specification constraints.
  * @bitmap must be cleared */
-static int coroutine_fn GRAPH_RDLOCK
-load_bitmap_data(BlockDriverState *bs, const uint64_t *bitmap_table,
-                 uint32_t bitmap_table_size, BdrvDirtyBitmap *bitmap)
+static int load_bitmap_data(BlockDriverState *bs,
+                            const uint64_t *bitmap_table,
+                            uint32_t bitmap_table_size,
+                            BdrvDirtyBitmap *bitmap)
 {
     int ret = 0;
     BDRVQcow2State *s = bs->opaque;
@@ -318,7 +319,7 @@ load_bitmap_data(BlockDriverState *bs, const uint64_t *bitmap_table,
                  * already cleared */
             }
         } else {
-            ret = bdrv_co_pread(bs->file, data_offset, s->cluster_size, buf, 0);
+            ret = bdrv_pread(bs->file, data_offset, s->cluster_size, buf, 0);
             if (ret < 0) {
                 goto finish;
             }
@@ -336,9 +337,8 @@ finish:
     return ret;
 }
 
-static coroutine_fn GRAPH_RDLOCK
-BdrvDirtyBitmap *load_bitmap(BlockDriverState *bs,
-                             Qcow2Bitmap *bm, Error **errp)
+static BdrvDirtyBitmap *load_bitmap(BlockDriverState *bs,
+                                    Qcow2Bitmap *bm, Error **errp)
 {
     int ret;
     uint64_t *bitmap_table = NULL;
@@ -649,10 +649,9 @@ fail:
     return NULL;
 }
 
-int coroutine_fn
-qcow2_check_bitmaps_refcounts(BlockDriverState *bs, BdrvCheckResult *res,
-                              void **refcount_table,
-                              int64_t *refcount_table_size)
+int qcow2_check_bitmaps_refcounts(BlockDriverState *bs, BdrvCheckResult *res,
+                                  void **refcount_table,
+                                  int64_t *refcount_table_size)
 {
     int ret;
     BDRVQcow2State *s = bs->opaque;
@@ -958,9 +957,8 @@ static void set_readonly_helper(gpointer bitmap, gpointer value)
  * If header_updated is not NULL then it is set appropriately regardless of
  * the return value.
  */
-bool coroutine_fn GRAPH_RDLOCK
-qcow2_load_dirty_bitmaps(BlockDriverState *bs,
-                         bool *header_updated, Error **errp)
+bool coroutine_fn qcow2_load_dirty_bitmaps(BlockDriverState *bs,
+                                           bool *header_updated, Error **errp)
 {
     BDRVQcow2State *s = bs->opaque;
     Qcow2BitmapList *bm_list;

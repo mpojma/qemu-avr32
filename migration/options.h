@@ -17,6 +17,13 @@
 #include "hw/qdev-properties.h"
 #include "hw/qdev-properties-system.h"
 
+/* constants */
+
+/* Amount of time to allocate to each "chunk" of bandwidth-throttled
+ * data. */
+#define BUFFER_DELAY     100
+#define XFER_LIMIT_RATIO (1000 / BUFFER_DELAY)
+
 /* migration properties */
 
 extern Property migration_properties[];
@@ -29,7 +36,6 @@ bool migrate_block(void);
 bool migrate_colo(void);
 bool migrate_compress(void);
 bool migrate_dirty_bitmaps(void);
-bool migrate_dirty_limit(void);
 bool migrate_events(void);
 bool migrate_ignore_shared(void);
 bool migrate_late_block_activate(void);
@@ -41,7 +47,6 @@ bool migrate_postcopy_ram(void);
 bool migrate_rdma_pin_all(void);
 bool migrate_release_ram(void);
 bool migrate_return_path(void);
-bool migrate_switchover_ack(void);
 bool migrate_validate_uuid(void);
 bool migrate_xbzrle(void);
 bool migrate_zero_blocks(void);
@@ -66,8 +71,6 @@ bool migrate_cap_set(int cap, bool value, Error **errp);
 /* parameters */
 
 const BitmapMigrationNodeAliasList *migrate_block_bitmap_mapping(void);
-bool migrate_has_block_bitmap_mapping(void);
-
 bool migrate_block_incremental(void);
 uint32_t migrate_checkpoint_delay(void);
 int migrate_compress_level(void);
@@ -80,7 +83,7 @@ int migrate_decompress_threads(void);
 uint64_t migrate_downtime_limit(void);
 uint8_t migrate_max_cpu_throttle(void);
 uint64_t migrate_max_bandwidth(void);
-uint64_t migrate_max_postcopy_bandwidth(void);
+int64_t migrate_max_postcopy_bandwidth(void);
 int migrate_multifd_channels(void);
 MultiFDCompression migrate_multifd_compression(void);
 int migrate_multifd_zlib_level(void);

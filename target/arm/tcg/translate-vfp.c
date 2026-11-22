@@ -21,6 +21,10 @@
  */
 
 #include "qemu/osdep.h"
+#include "tcg/tcg-op.h"
+#include "tcg/tcg-op-gvec.h"
+#include "exec/exec-all.h"
+#include "exec/gen-icount.h"
 #include "translate.h"
 #include "translate-a32.h"
 
@@ -113,8 +117,9 @@ static void gen_preserve_fp_state(DisasContext *s, bool skip_context_update)
          * so we must mark it as an IO operation for icount (and cause
          * this to be the last insn in the TB).
          */
-        if (translator_io_start(&s->base)) {
+        if (tb_cflags(s->base.tb) & CF_USE_ICOUNT) {
             s->base.is_jmp = DISAS_UPDATE_EXIT;
+            gen_io_start();
         }
         gen_helper_v7m_preserve_fp_state(cpu_env);
         /*
@@ -144,7 +149,7 @@ static void gen_preserve_fp_state(DisasContext *s, bool skip_context_update)
  * Generate code for M-profile FP context handling: update the
  * ownership of the FP context, and create a new context if
  * necessary. This corresponds to the parts of the pseudocode
- * ExecuteFPCheck() after the initial PreserveFPState() call.
+ * ExecuteFPCheck() after the inital PreserveFPState() call.
  */
 static void gen_update_fp_context(DisasContext *s)
 {

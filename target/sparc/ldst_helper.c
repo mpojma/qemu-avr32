@@ -593,7 +593,6 @@ uint64_t helper_ld_asi(CPUSPARCState *env, target_ulong addr,
 #if defined(DEBUG_MXCC) || defined(DEBUG_ASI)
     uint32_t last_addr = addr;
 #endif
-    MemOpIdx oi;
 
     do_check_align(env, addr, size - 1, GETPC());
     switch (asi) {
@@ -693,20 +692,19 @@ uint64_t helper_ld_asi(CPUSPARCState *env, target_ulong addr,
     case ASI_M_IODIAG:  /* Turbosparc IOTLB Diagnostic */
         break;
     case ASI_KERNELTXT: /* Supervisor code access */
-        oi = make_memop_idx(memop, cpu_mmu_index(env, true));
         switch (size) {
         case 1:
-            ret = cpu_ldb_code_mmu(env, addr, oi, GETPC());
+            ret = cpu_ldub_code(env, addr);
             break;
         case 2:
-            ret = cpu_ldw_code_mmu(env, addr, oi, GETPC());
+            ret = cpu_lduw_code(env, addr);
             break;
         default:
         case 4:
-            ret = cpu_ldl_code_mmu(env, addr, oi, GETPC());
+            ret = cpu_ldl_code(env, addr);
             break;
         case 8:
-            ret = cpu_ldq_code_mmu(env, addr, oi, GETPC());
+            ret = cpu_ldq_code(env, addr);
             break;
         }
         break;
@@ -1191,7 +1189,7 @@ uint64_t helper_ld_asi(CPUSPARCState *env, target_ulong addr,
     case ASI_PNFL: /* Primary no-fault LE */
     case ASI_SNF:  /* Secondary no-fault */
     case ASI_SNFL: /* Secondary no-fault LE */
-        if (!page_check_range(addr, size, PAGE_READ)) {
+        if (page_check_range(addr, size, PAGE_READ) == -1) {
             ret = 0;
             break;
         }
@@ -1334,13 +1332,25 @@ uint64_t helper_ld_asi(CPUSPARCState *env, target_ulong addr,
                 ret = cpu_ldb_mmu(env, addr, oi, GETPC());
                 break;
             case 2:
-                ret = cpu_ldw_mmu(env, addr, oi, GETPC());
+                if (asi & 8) {
+                    ret = cpu_ldw_le_mmu(env, addr, oi, GETPC());
+                } else {
+                    ret = cpu_ldw_be_mmu(env, addr, oi, GETPC());
+                }
                 break;
             case 4:
-                ret = cpu_ldl_mmu(env, addr, oi, GETPC());
+                if (asi & 8) {
+                    ret = cpu_ldl_le_mmu(env, addr, oi, GETPC());
+                } else {
+                    ret = cpu_ldl_be_mmu(env, addr, oi, GETPC());
+                }
                 break;
             case 8:
-                ret = cpu_ldq_mmu(env, addr, oi, GETPC());
+                if (asi & 8) {
+                    ret = cpu_ldq_le_mmu(env, addr, oi, GETPC());
+                } else {
+                    ret = cpu_ldq_be_mmu(env, addr, oi, GETPC());
+                }
                 break;
             default:
                 g_assert_not_reached();

@@ -88,7 +88,6 @@ static int cap_ppc_nested_kvm_hv;
 static int cap_large_decr;
 static int cap_fwnmi;
 static int cap_rpt_invalidate;
-static int cap_ail_mode_3;
 
 static uint32_t debug_inst_opcode;
 
@@ -153,7 +152,6 @@ int kvm_arch_init(MachineState *ms, KVMState *s)
     }
 
     cap_rpt_invalidate = kvm_vm_check_extension(s, KVM_CAP_PPC_RPT_INVALIDATE);
-    cap_ail_mode_3 = kvm_vm_check_extension(s, KVM_CAP_PPC_AIL_MODE_3);
     kvm_ppc_register_host_cpu_type();
 
     return 0;
@@ -929,7 +927,10 @@ int kvm_arch_put_registers(CPUState *cs, int level)
         regs.gpr[i] = env->gpr[i];
     }
 
-    regs.cr = ppc_get_cr(env);
+    regs.cr = 0;
+    for (i = 0; i < 8; i++) {
+        regs.cr |= (env->crf[i] & 15) << (4 * (7 - i));
+    }
 
     ret = kvm_vcpu_ioctl(cs, KVM_SET_REGS, &regs);
     if (ret < 0) {
@@ -1204,6 +1205,7 @@ int kvm_arch_get_registers(CPUState *cs)
     PowerPCCPU *cpu = POWERPC_CPU(cs);
     CPUPPCState *env = &cpu->env;
     struct kvm_regs regs;
+    uint32_t cr;
     int i, ret;
 
     ret = kvm_vcpu_ioctl(cs, KVM_GET_REGS, &regs);
@@ -1211,7 +1213,12 @@ int kvm_arch_get_registers(CPUState *cs)
         return ret;
     }
 
-    ppc_set_cr(env, regs.cr);
+    cr = regs.cr;
+    for (i = 7; i >= 0; i--) {
+        env->crf[i] = cr & 15;
+        cr >>= 4;
+    }
+
     env->ctr = regs.ctr;
     env->lr = regs.lr;
     cpu_write_xer(env, regs.xer);
@@ -1728,10 +1735,6 @@ int kvmppc_or_tsr_bits(PowerPCCPU *cpu, uint32_t tsr_bits)
         .addr = (uintptr_t) &bits,
     };
 
-    if (!kvm_enabled()) {
-        return 0;
-    }
-
     return kvm_vcpu_ioctl(cs, KVM_SET_ONE_REG, &reg);
 }
 
@@ -1744,10 +1747,6 @@ int kvmppc_clear_tsr_bits(PowerPCCPU *cpu, uint32_t tsr_bits)
         .id = KVM_REG_PPC_CLEAR_TSR,
         .addr = (uintptr_t) &bits,
     };
-
-    if (!kvm_enabled()) {
-        return 0;
-    }
 
     return kvm_vcpu_ioctl(cs, KVM_SET_ONE_REG, &reg);
 }
@@ -1762,10 +1761,6 @@ int kvmppc_set_tcr(PowerPCCPU *cpu)
         .id = KVM_REG_PPC_TCR,
         .addr = (uintptr_t) &tcr,
     };
-
-    if (!kvm_enabled()) {
-        return 0;
-    }
 
     return kvm_vcpu_ioctl(cs, KVM_SET_ONE_REG, &reg);
 }
@@ -2572,11 +2567,6 @@ int kvmppc_enable_cap_large_decr(PowerPCCPU *cpu, int enable)
 int kvmppc_has_cap_rpt_invalidate(void)
 {
     return cap_rpt_invalidate;
-}
-
-bool kvmppc_supports_ail_3(void)
-{
-    return cap_ail_mode_3;
 }
 
 PowerPCCPUClass *kvm_ppc_get_host_cpu_class(void)

@@ -24,8 +24,8 @@ RUN export DEBIAN_FRONTEND=noninteractive && \
                       exuberant-ctags \
                       findutils \
                       flex \
-                      gcc \
                       gcovr \
+                      genisoimage \
                       gettext \
                       git \
                       hostname \
@@ -37,7 +37,6 @@ RUN export DEBIAN_FRONTEND=noninteractive && \
                       locales \
                       make \
                       meson \
-                      mtools \
                       ncat \
                       ninja-build \
                       openssh-client \
@@ -58,7 +57,6 @@ RUN export DEBIAN_FRONTEND=noninteractive && \
                       tar \
                       tesseract-ocr \
                       tesseract-ocr-eng \
-                      xorriso \
                       zstd && \
     eatmydata apt-get autoremove -y && \
     eatmydata apt-get autoclean -y && \
@@ -115,7 +113,6 @@ RUN export DEBIAN_FRONTEND=noninteractive && \
                       libnfs-dev:mips64el \
                       libnuma-dev:mips64el \
                       libpam0g-dev:mips64el \
-                      libpipewire-0.3-dev:mips64el \
                       libpixman-1-dev:mips64el \
                       libpng-dev:mips64el \
                       libpulse-dev:mips64el \

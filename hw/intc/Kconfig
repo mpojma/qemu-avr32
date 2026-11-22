@@ -49,6 +49,7 @@ config S390_FLIC
 
 config S390_FLIC_KVM
     bool
+    default y
     depends on S390_FLIC && KVM
 
 config OMPIC

@@ -263,13 +263,25 @@ static bool trans_th_tst(DisasContext *ctx, arg_th_tst *a)
 
 /* XTheadCmo */
 
+static inline int priv_level(DisasContext *ctx)
+{
+#ifdef CONFIG_USER_ONLY
+    return PRV_U;
+#else
+     /* Priv level is part of mem_idx. */
+    return ctx->mem_idx & TB_FLAGS_PRIV_MMU_MASK;
+#endif
+}
+
 /* Test if priv level is M, S, or U (cannot fail). */
 #define REQUIRE_PRIV_MSU(ctx)
 
 /* Test if priv level is M or S. */
 #define REQUIRE_PRIV_MS(ctx)                                    \
 do {                                                            \
-    if (ctx->priv == PRV_U) {                                   \
+    int priv = priv_level(ctx);                                 \
+    if (!(priv == PRV_M ||                                      \
+          priv == PRV_S)) {                                     \
         return false;                                           \
     }                                                           \
 } while (0)
@@ -999,7 +1011,7 @@ static void gen_th_sync_local(DisasContext *ctx)
      * Emulate out-of-order barriers with pipeline flush
      * by exiting the translation block.
      */
-    gen_update_pc(ctx, ctx->cur_insn_len);
+    gen_set_pc_imm(ctx, ctx->pc_succ_insn);
     tcg_gen_exit_tb(NULL, 0);
     ctx->base.is_jmp = DISAS_NORETURN;
 }

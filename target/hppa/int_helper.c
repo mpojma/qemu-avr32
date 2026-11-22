@@ -25,6 +25,7 @@
 #include "hw/core/cpu.h"
 #include "hw/hppa/hppa_hardware.h"
 
+#ifndef CONFIG_USER_ONLY
 static void eval_interrupt(HPPACPU *cpu)
 {
     CPUState *cs = CPU(cpu);
@@ -37,7 +38,7 @@ static void eval_interrupt(HPPACPU *cpu)
 
 /* Each CPU has a word mapped into the GSC bus.  Anything on the GSC bus
  * can write to this word to raise an external interrupt on the target CPU.
- * This includes the system controller (DINO) for regular devices, or
+ * This includes the system controler (DINO) for regular devices, or
  * another CPU for SMP interprocessor interrupts.
  */
 static uint64_t io_eir_read(void *opaque, hwaddr addr, unsigned size)
@@ -272,3 +273,5 @@ bool hppa_cpu_exec_interrupt(CPUState *cs, int interrupt_request)
     }
     return false;
 }
+
+#endif /* !CONFIG_USER_ONLY */

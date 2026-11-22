@@ -74,7 +74,7 @@ uint64_t replay_get_current_icount(void)
 int replay_get_instructions(void)
 {
     int res = 0;
-    g_assert(replay_mutex_locked());
+    replay_mutex_lock();
     if (replay_next_event_is(EVENT_INSTRUCTION)) {
         res = replay_state.instruction_count;
         if (replay_break_icount != -1LL) {
@@ -85,6 +85,7 @@ int replay_get_instructions(void)
             }
         }
     }
+    replay_mutex_unlock();
     return res;
 }
 

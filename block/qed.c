@@ -195,15 +195,14 @@ static bool qed_is_image_size_valid(uint64_t image_size, uint32_t cluster_size,
  *
  * The string is NUL-terminated.
  */
-static int coroutine_fn GRAPH_RDLOCK
-qed_read_string(BdrvChild *file, uint64_t offset,
-                size_t n, char *buf, size_t buflen)
+static int qed_read_string(BdrvChild *file, uint64_t offset, size_t n,
+                           char *buf, size_t buflen)
 {
     int ret;
     if (n >= buflen) {
         return -EINVAL;
     }
-    ret = bdrv_co_pread(file, offset, n, buf, 0);
+    ret = bdrv_pread(file, offset, n, buf, 0);
     if (ret < 0) {
         return ret;
     }
@@ -558,12 +557,10 @@ typedef struct QEDOpenCo {
     int ret;
 } QEDOpenCo;
 
-static void coroutine_fn bdrv_qed_open_entry(void *opaque)
+static void coroutine_fn GRAPH_RDLOCK bdrv_qed_open_entry(void *opaque)
 {
     QEDOpenCo *qoc = opaque;
     BDRVQEDState *s = qoc->bs->opaque;
-
-    GRAPH_RDLOCK_GUARD();
 
     qemu_co_mutex_lock(&s->table_lock);
     qoc->ret = bdrv_qed_do_open(qoc->bs, qoc->options, qoc->flags, qoc->errp);
@@ -582,17 +579,21 @@ static int bdrv_qed_open(BlockDriverState *bs, QDict *options, int flags,
     };
     int ret;
 
+    assume_graph_lock(); /* FIXME */
+
     ret = bdrv_open_file_child(NULL, options, "file", bs, errp);
     if (ret < 0) {
         return ret;
     }
 
     bdrv_qed_init_state(bs);
-    assert(!qemu_in_coroutine());
-    assert(qemu_get_current_aio_context() == qemu_get_aio_context());
-    qemu_coroutine_enter(qemu_coroutine_create(bdrv_qed_open_entry, &qoc));
-    BDRV_POLL_WHILE(bs, qoc.ret == -EINPROGRESS);
-
+    if (qemu_in_coroutine()) {
+        bdrv_qed_open_entry(&qoc);
+    } else {
+        assert(qemu_get_current_aio_context() == qemu_get_aio_context());
+        qemu_coroutine_enter(qemu_coroutine_create(bdrv_qed_open_entry, &qoc));
+        BDRV_POLL_WHILE(bs, qoc.ret == -EINPROGRESS);
+    }
     return qoc.ret;
 }
 
@@ -631,8 +632,8 @@ static void bdrv_qed_close(BlockDriverState *bs)
     qemu_vfree(s->l1_table);
 }
 
-static int coroutine_fn GRAPH_UNLOCKED
-bdrv_qed_co_create(BlockdevCreateOptions *opts, Error **errp)
+static int coroutine_fn bdrv_qed_co_create(BlockdevCreateOptions *opts,
+                                           Error **errp)
 {
     BlockdevCreateOptionsQed *qed_opts;
     BlockBackend *blk = NULL;
@@ -747,12 +748,12 @@ bdrv_qed_co_create(BlockdevCreateOptions *opts, Error **errp)
     ret = 0; /* success */
 out:
     g_free(l1_table);
-    blk_co_unref(blk);
-    bdrv_co_unref(bs);
+    blk_unref(blk);
+    bdrv_unref(bs);
     return ret;
 }
 
-static int coroutine_fn GRAPH_UNLOCKED
+static int coroutine_fn GRAPH_RDLOCK
 bdrv_qed_co_create_opts(BlockDriver *drv, const char *filename,
                         QemuOpts *opts, Error **errp)
 {
@@ -818,7 +819,7 @@ bdrv_qed_co_create_opts(BlockDriver *drv, const char *filename,
 
 fail:
     qobject_unref(qdict);
-    bdrv_co_unref(bs);
+    bdrv_unref(bs);
     qapi_free_BlockdevCreateOptions(create_options);
     return ret;
 }
@@ -883,7 +884,7 @@ static int coroutine_fn GRAPH_RDLOCK
 qed_read_backing_file(BDRVQEDState *s, uint64_t pos, QEMUIOVector *qiov)
 {
     if (s->bs->backing) {
-        BLKDBG_CO_EVENT(s->bs->file, BLKDBG_READ_BACKING_AIO);
+        BLKDBG_EVENT(s->bs->file, BLKDBG_READ_BACKING_AIO);
         return bdrv_co_preadv(s->bs->backing, pos, qiov->size, qiov, 0);
     }
     qemu_iovec_memset(qiov, 0, 0, qiov->size);
@@ -918,7 +919,7 @@ qed_copy_from_backing_file(BDRVQEDState *s, uint64_t pos, uint64_t len,
         goto out;
     }
 
-    BLKDBG_CO_EVENT(s->bs->file, BLKDBG_COW_WRITE);
+    BLKDBG_EVENT(s->bs->file, BLKDBG_COW_WRITE);
     ret = bdrv_co_pwritev(s->bs->file, offset, qiov.size, &qiov, 0);
     if (ret < 0) {
         goto out;
@@ -1070,7 +1071,7 @@ static int coroutine_fn GRAPH_RDLOCK qed_aio_write_main(QEDAIOCB *acb)
 
     trace_qed_aio_write_main(s, acb, 0, offset, acb->cur_qiov.size);
 
-    BLKDBG_CO_EVENT(s->bs->file, BLKDBG_WRITE_AIO);
+    BLKDBG_EVENT(s->bs->file, BLKDBG_WRITE_AIO);
     return bdrv_co_pwritev(s->bs->file, offset, acb->cur_qiov.size,
                            &acb->cur_qiov, 0);
 }
@@ -1324,7 +1325,7 @@ qed_aio_read_data(void *opaque, int ret, uint64_t offset, size_t len)
     } else if (ret != QED_CLUSTER_FOUND) {
         r = qed_read_backing_file(s, acb->cur_pos, &acb->cur_qiov);
     } else {
-        BLKDBG_CO_EVENT(bs->file, BLKDBG_READ_AIO);
+        BLKDBG_EVENT(bs->file, BLKDBG_READ_AIO);
         r = bdrv_co_preadv(bs->file, offset, acb->cur_qiov.size,
                            &acb->cur_qiov, 0);
     }

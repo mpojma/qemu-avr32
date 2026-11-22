@@ -19,8 +19,6 @@
  *
  */
 
-/* header to be included in non-HAX-specific code */
-
 #ifndef QEMU_HAX_H
 #define QEMU_HAX_H
 

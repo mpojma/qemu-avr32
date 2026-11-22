@@ -58,21 +58,21 @@ const uint8_t parity_table[256] = {
 };
 
 #define SHIFT 0
-#include "cc_helper_template.h.inc"
+#include "cc_helper_template.h"
 #undef SHIFT
 
 #define SHIFT 1
-#include "cc_helper_template.h.inc"
+#include "cc_helper_template.h"
 #undef SHIFT
 
 #define SHIFT 2
-#include "cc_helper_template.h.inc"
+#include "cc_helper_template.h"
 #undef SHIFT
 
 #ifdef TARGET_X86_64
 
 #define SHIFT 3
-#include "cc_helper_template.h.inc"
+#include "cc_helper_template.h"
 #undef SHIFT
 
 #endif

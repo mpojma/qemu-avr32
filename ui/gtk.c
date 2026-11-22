@@ -130,8 +130,6 @@ typedef struct VCChardev VCChardev;
 DECLARE_INSTANCE_CHECKER(VCChardev, VC_CHARDEV,
                          TYPE_CHARDEV_VC)
 
-static struct touch_slot touch_slots[INPUT_EVENT_SLOTS_MAX];
-
 bool gtk_use_gl_area;
 
 static void gd_grab_pointer(VirtualConsole *vc, const char *reason);
@@ -583,12 +581,7 @@ static void gd_gl_release_dmabuf(DisplayChangeListener *dcl,
                                  QemuDmaBuf *dmabuf)
 {
 #ifdef CONFIG_GBM
-    VirtualConsole *vc = container_of(dcl, VirtualConsole, gfx.dcl);
-
     egl_dmabuf_release_texture(dmabuf);
-    if (vc->gfx.guest_fb.dmabuf == dmabuf) {
-        vc->gfx.guest_fb.dmabuf = NULL;
-    }
 #endif
 }
 
@@ -876,6 +869,7 @@ static gboolean gd_motion_event(GtkWidget *widget, GdkEventMotion *motion,
 {
     VirtualConsole *vc = opaque;
     GtkDisplayState *s = vc->s;
+    GdkWindow *window;
     int x, y;
     int mx, my;
     int fbh, fbw;
@@ -888,9 +882,10 @@ static gboolean gd_motion_event(GtkWidget *widget, GdkEventMotion *motion,
     fbw = surface_width(vc->gfx.ds) * vc->gfx.scale_x;
     fbh = surface_height(vc->gfx.ds) * vc->gfx.scale_y;
 
-    ww = gtk_widget_get_allocated_width(widget);
-    wh = gtk_widget_get_allocated_height(widget);
-    ws = gtk_widget_get_scale_factor(widget);
+    window = gtk_widget_get_window(vc->gfx.drawing_area);
+    ww = gdk_window_get_width(window);
+    wh = gdk_window_get_height(window);
+    ws = gdk_window_get_scale_factor(window);
 
     mx = my = 0;
     if (ww > fbw) {
@@ -1063,36 +1058,6 @@ static gboolean gd_scroll_event(GtkWidget *widget, GdkEventScroll *scroll,
     return TRUE;
 }
 
-
-static gboolean gd_touch_event(GtkWidget *widget, GdkEventTouch *touch,
-                               void *opaque)
-{
-    VirtualConsole *vc = opaque;
-    uint64_t num_slot = GPOINTER_TO_UINT(touch->sequence);
-    int type = -1;
-
-    switch (touch->type) {
-    case GDK_TOUCH_BEGIN:
-        type = INPUT_MULTI_TOUCH_TYPE_BEGIN;
-        break;
-    case GDK_TOUCH_UPDATE:
-        type = INPUT_MULTI_TOUCH_TYPE_UPDATE;
-        break;
-    case GDK_TOUCH_END:
-    case GDK_TOUCH_CANCEL:
-        type = INPUT_MULTI_TOUCH_TYPE_END;
-        break;
-    default:
-        warn_report("gtk: unexpected touch event type\n");
-        return FALSE;
-    }
-
-    console_handle_touch_event(vc->gfx.dcl.con, touch_slots,
-                               num_slot, surface_width(vc->gfx.ds),
-                               surface_height(vc->gfx.ds), touch->x,
-                               touch->y, type, &error_warn);
-    return TRUE;
-}
 
 static const guint16 *gd_get_keymap(size_t *maplen)
 {
@@ -2015,8 +1980,6 @@ static void gd_connect_vc_gfx_signals(VirtualConsole *vc)
                          G_CALLBACK(gd_key_event), vc);
         g_signal_connect(vc->gfx.drawing_area, "key-release-event",
                          G_CALLBACK(gd_key_event), vc);
-        g_signal_connect(vc->gfx.drawing_area, "touch-event",
-                         G_CALLBACK(gd_touch_event), vc);
 
         g_signal_connect(vc->gfx.drawing_area, "enter-notify-event",
                          G_CALLBACK(gd_enter_event), vc);
@@ -2126,7 +2089,6 @@ static GSList *gd_vc_gfx_init(GtkDisplayState *s, VirtualConsole *vc,
                               GSList *group, GtkWidget *view_menu)
 {
     bool zoom_to_fit = false;
-    int i;
 
     vc->label = qemu_console_get_label(con);
     vc->s = s;
@@ -2174,7 +2136,6 @@ static GSList *gd_vc_gfx_init(GtkDisplayState *s, VirtualConsole *vc,
                           GDK_BUTTON_PRESS_MASK |
                           GDK_BUTTON_RELEASE_MASK |
                           GDK_BUTTON_MOTION_MASK |
-                          GDK_TOUCH_MASK |
                           GDK_ENTER_NOTIFY_MASK |
                           GDK_LEAVE_NOTIFY_MASK |
                           GDK_SCROLL_MASK |
@@ -2208,11 +2169,6 @@ static GSList *gd_vc_gfx_init(GtkDisplayState *s, VirtualConsole *vc,
     if (zoom_to_fit) {
         gtk_menu_item_activate(GTK_MENU_ITEM(s->zoom_fit_item));
         s->free_scale = true;
-    }
-
-    for (i = 0; i < INPUT_EVENT_SLOTS_MAX; i++) {
-        struct touch_slot *slot = &touch_slots[i];
-        slot->tracking_id = -1;
     }
 
     return group;
@@ -2486,12 +2442,6 @@ static void early_gtk_display_init(DisplayOptions *opts)
 #if defined(CONFIG_OPENGL)
 #if defined(GDK_WINDOWING_WAYLAND)
         if (GDK_IS_WAYLAND_DISPLAY(gdk_display_get_default())) {
-            gtk_use_gl_area = true;
-            gtk_gl_area_init();
-        } else
-#endif
-#if defined(GDK_WINDOWING_WIN32)
-        if (GDK_IS_WIN32_DISPLAY(gdk_display_get_default())) {
             gtk_use_gl_area = true;
             gtk_gl_area_init();
         } else

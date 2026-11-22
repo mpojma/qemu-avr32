@@ -1,10 +1,10 @@
 # THIS FILE WAS AUTO-GENERATED
 #
-#  $ lcitool dockerfile --layers all --cross mingw32 fedora-38 qemu
+#  $ lcitool dockerfile --layers all --cross mingw32 fedora-37 qemu
 #
 # https://gitlab.com/libvirt/libvirt-ci
 
-FROM registry.fedoraproject.org/fedora:38
+FROM registry.fedoraproject.org/fedora:37
 
 RUN dnf install -y nosync && \
     printf '#!/bin/sh\n\
@@ -29,8 +29,8 @@ exec "$@"\n' > /usr/bin/nosync && \
                diffutils \
                findutils \
                flex \
-               gcc \
                gcovr \
+               genisoimage \
                git \
                glib2-devel \
                glibc-langpack-en \
@@ -38,7 +38,6 @@ exec "$@"\n' > /usr/bin/nosync && \
                llvm \
                make \
                meson \
-               mtools \
                ninja-build \
                nmap-ncat \
                openssh-clients \
@@ -60,7 +59,6 @@ exec "$@"\n' > /usr/bin/nosync && \
                tesseract-langpack-eng \
                util-linux \
                which \
-               xorriso \
                zstd && \
     nosync dnf autoremove -y && \
     nosync dnf clean all -y

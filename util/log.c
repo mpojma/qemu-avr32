@@ -495,8 +495,12 @@ const QEMULogItem qemu_log_items[] = {
       "log every user-mode syscall, its input, and its result" },
     { LOG_PER_THREAD, "tid",
       "open a separate log file per thread; filename must contain '%d'" },
-    { CPU_LOG_TB_VPU, "vpu",
-      "include VPU registers in the 'cpu' logging" },
+    { LOG_AVR32_DISAS, "avr32_disas",
+      "log AVR32 instruction decode/disassembly" },
+    { LOG_AVR32_CPU, "avr32_cpu",
+      "log AVR32 CPU state changes and exceptions" },
+    { LOG_AVR32_DEV, "avr32_dev",
+      "log AVR32 device/MMIO register activity" },
     { 0, NULL, NULL },
 };
 

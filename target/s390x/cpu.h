@@ -76,6 +76,9 @@ struct CPUArchState {
 
     float_status fpu_status; /* passed to softfloat lib */
 
+    /* The low part of a 128-bit return, or remainder of a divide.  */
+    uint64_t retxl;
+
     PSW psw;
 
     S390CrashReason crash_reason;
@@ -378,8 +381,8 @@ static inline int cpu_mmu_index(CPUS390XState *env, bool ifetch)
 #endif
 }
 
-static inline void cpu_get_tb_cpu_state(CPUS390XState *env, vaddr *pc,
-                                        uint64_t *cs_base, uint32_t *flags)
+static inline void cpu_get_tb_cpu_state(CPUS390XState* env, target_ulong *pc,
+                                        target_ulong *cs_base, uint32_t *flags)
 {
     if (env->psw.addr & 1) {
         /*

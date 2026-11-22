@@ -192,10 +192,7 @@ BlockExport *blk_exp_add(BlockExportOptions *export, Error **errp)
     return exp;
 
 fail:
-    if (blk) {
-        blk_set_dev_ops(blk, NULL, NULL);
-        blk_unref(blk);
-    }
+    blk_unref(blk);
     aio_context_release(ctx);
     if (exp) {
         g_free(exp->id);
@@ -204,10 +201,11 @@ fail:
     return NULL;
 }
 
+/* Callers must hold exp->ctx lock */
 void blk_exp_ref(BlockExport *exp)
 {
-    assert(qatomic_read(&exp->refcount) > 0);
-    qatomic_inc(&exp->refcount);
+    assert(exp->refcount > 0);
+    exp->refcount++;
 }
 
 /* Runs in the main thread */
@@ -221,7 +219,6 @@ static void blk_exp_delete_bh(void *opaque)
     assert(exp->refcount == 0);
     QLIST_REMOVE(exp, next);
     exp->drv->delete(exp);
-    blk_set_dev_ops(exp->blk, NULL, NULL);
     blk_unref(exp->blk);
     qapi_event_send_block_export_deleted(exp->id);
     g_free(exp->id);
@@ -230,10 +227,11 @@ static void blk_exp_delete_bh(void *opaque)
     aio_context_release(aio_context);
 }
 
+/* Callers must hold exp->ctx lock */
 void blk_exp_unref(BlockExport *exp)
 {
-    assert(qatomic_read(&exp->refcount) > 0);
-    if (qatomic_fetch_dec(&exp->refcount) == 1) {
+    assert(exp->refcount > 0);
+    if (--exp->refcount == 0) {
         /* Touch the block_exports list only in the main thread */
         aio_bh_schedule_oneshot(qemu_get_aio_context(), blk_exp_delete_bh,
                                 exp);
@@ -341,8 +339,7 @@ void qmp_block_export_del(const char *id,
     if (!has_mode) {
         mode = BLOCK_EXPORT_REMOVE_MODE_SAFE;
     }
-    if (mode == BLOCK_EXPORT_REMOVE_MODE_SAFE &&
-        qatomic_read(&exp->refcount) > 1) {
+    if (mode == BLOCK_EXPORT_REMOVE_MODE_SAFE && exp->refcount > 1) {
         error_setg(errp, "export '%s' still in use", exp->id);
         error_append_hint(errp, "Use mode='hard' to force client "
                           "disconnect\n");

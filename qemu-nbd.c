@@ -73,6 +73,7 @@
 
 #define MBR_SIZE 512
 
+static int verbose;
 static char *srcpath;
 static SocketAddress *saddr;
 static int persistent = 0;
@@ -271,15 +272,9 @@ static void *show_parts(void *arg)
     return NULL;
 }
 
-struct NbdClientOpts {
-    char *device;
-    bool fork_process;
-    bool verbose;
-};
-
 static void *nbd_client_thread(void *arg)
 {
-    struct NbdClientOpts *opts = arg;
+    char *device = arg;
     NBDExportInfo info = { .request_sizes = false, .name = g_strdup("") };
     QIOChannelSocket *sioc;
     int fd = -1;
@@ -303,10 +298,10 @@ static void *nbd_client_thread(void *arg)
         goto out;
     }
 
-    fd = open(opts->device, O_RDWR);
+    fd = open(device, O_RDWR);
     if (fd < 0) {
         /* Linux-only, we can use %m in printf.  */
-        error_report("Failed to open %s: %m", opts->device);
+        error_report("Failed to open %s: %m", device);
         goto out;
     }
 
@@ -316,18 +311,14 @@ static void *nbd_client_thread(void *arg)
     }
 
     /* update partition table */
-    pthread_create(&show_parts_thread, NULL, show_parts, opts->device);
+    pthread_create(&show_parts_thread, NULL, show_parts, device);
 
-    if (opts->verbose && !opts->fork_process) {
+    if (verbose) {
         fprintf(stderr, "NBD device %s is now connected to %s\n",
-                opts->device, srcpath);
+                device, srcpath);
     } else {
         /* Close stderr so that the qemu-nbd process exits.  */
-        if (dup2(STDOUT_FILENO, STDERR_FILENO) < 0) {
-            error_report("Could not set stderr to /dev/null: %s",
-                         strerror(errno));
-            exit(EXIT_FAILURE);
-        }
+        dup2(STDOUT_FILENO, STDERR_FILENO);
     }
 
     if (nbd_client(fd) < 0) {
@@ -582,16 +573,13 @@ int main(int argc, char **argv)
     const char *tlshostname = NULL;
     bool imageOpts = false;
     bool writethrough = false; /* Client will flush as needed. */
-    bool verbose = false;
     bool fork_process = false;
     bool list = false;
+    int old_stderr = -1;
     unsigned socket_activation;
     const char *pid_file_name = NULL;
     const char *selinux_label = NULL;
     BlockExportOptions *export_opts;
-#if HAVE_NBD_DEVICE
-    struct NbdClientOpts opts;
-#endif
 
 #ifdef CONFIG_POSIX
     os_setup_early_signal_handling();
@@ -750,7 +738,7 @@ int main(int argc, char **argv)
             }
             break;
         case 'v':
-            verbose = true;
+            verbose = 1;
             break;
         case 'V':
             version(argv[0]);
@@ -940,30 +928,19 @@ int main(int argc, char **argv)
             error_report("Failed to fork: %s", strerror(errno));
             exit(EXIT_FAILURE);
         } else if (pid == 0) {
-            int saved_errno;
-
             close(stderr_fd[0]);
 
-            ret = qemu_daemon(1, 0);
-            saved_errno = errno;    /* dup2 will overwrite error below */
-
-            /* Temporarily redirect stderr to the parent's pipe...  */
-            if (dup2(stderr_fd[1], STDERR_FILENO) < 0) {
-                char str[256];
-                snprintf(str, sizeof(str),
-                         "%s: Failed to link stderr to the pipe: %s\n",
-                         g_get_prgname(), strerror(errno));
-                /*
-                 * We are unable to use error_report() here as we need to get
-                 * stderr pointed to the parent's pipe. Write to that pipe
-                 * manually.
-                 */
-                ret = write(stderr_fd[1], str, strlen(str));
-                exit(EXIT_FAILURE);
+            /* Remember parent's stderr if we will be restoring it. */
+            if (fork_process) {
+                old_stderr = dup(STDERR_FILENO);
             }
 
+            ret = qemu_daemon(1, 0);
+
+            /* Temporarily redirect stderr to the parent's pipe...  */
+            dup2(stderr_fd[1], STDERR_FILENO);
             if (ret < 0) {
-                error_report("Failed to daemonize: %s", strerror(saved_errno));
+                error_report("Failed to daemonize: %s", strerror(errno));
                 exit(EXIT_FAILURE);
             }
 
@@ -1094,11 +1071,7 @@ int main(int argc, char **argv)
         qdict_put_str(raw_opts, "driver", "raw");
         qdict_put_str(raw_opts, "file", bs->node_name);
         qdict_put_int(raw_opts, "offset", dev_offset);
-
-        aio_context_acquire(qemu_get_aio_context());
         bs = bdrv_open(NULL, NULL, raw_opts, flags, &error_fatal);
-        aio_context_release(qemu_get_aio_context());
-
         blk_remove_bs(blk);
         blk_insert_bs(blk, bs, &error_fatal);
         bdrv_unref(bs);
@@ -1148,13 +1121,8 @@ int main(int argc, char **argv)
     if (device) {
 #if HAVE_NBD_DEVICE
         int ret;
-        opts = (struct NbdClientOpts) {
-            .device = device,
-            .fork_process = fork_process,
-            .verbose = verbose,
-        };
 
-        ret = pthread_create(&client_thread, NULL, nbd_client_thread, &opts);
+        ret = pthread_create(&client_thread, NULL, nbd_client_thread, device);
         if (ret != 0) {
             error_report("Failed to create client thread: %s", strerror(ret));
             exit(EXIT_FAILURE);
@@ -1180,11 +1148,8 @@ int main(int argc, char **argv)
     }
 
     if (fork_process) {
-        if (dup2(STDOUT_FILENO, STDERR_FILENO) < 0) {
-            error_report("Could not set stderr to /dev/null: %s",
-                         strerror(errno));
-            exit(EXIT_FAILURE);
-        }
+        dup2(old_stderr, STDERR_FILENO);
+        close(old_stderr);
     }
 
     state = RUNNING;

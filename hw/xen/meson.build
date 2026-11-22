@@ -1,4 +1,4 @@
-system_ss.add(when: ['CONFIG_XEN_BUS'], if_true: files(
+softmmu_ss.add(when: ['CONFIG_XEN_BUS'], if_true: files(
   'xen-backend.c',
   'xen-bus-helper.c',
   'xen-bus.c',
@@ -7,7 +7,7 @@ system_ss.add(when: ['CONFIG_XEN_BUS'], if_true: files(
   'xen_pvdev.c',
 ))
 
-system_ss.add(when: ['CONFIG_XEN', xen], if_true: files(
+softmmu_ss.add(when: ['CONFIG_XEN', xen], if_true: files(
   'xen-operations.c',
 ))
 
@@ -26,10 +26,3 @@ else
 endif
 
 specific_ss.add_all(when: ['CONFIG_XEN', xen], if_true: xen_specific_ss)
-
-xen_ss = ss.source_set()
-
-xen_ss.add(when: 'CONFIG_XEN', if_true: files(
-  'xen-mapcache.c',
-  'xen-hvm-common.c',
-))

@@ -18,7 +18,6 @@
 #include "cxl_component.h"
 #include "cxl_device.h"
 
-#define CXL_CACHE_LINE_SIZE 64
 #define CXL_COMPONENT_REG_BAR_IDX 0
 #define CXL_DEVICE_REG_BAR_IDX 2
 

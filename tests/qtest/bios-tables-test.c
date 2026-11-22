@@ -1020,9 +1020,9 @@ static void test_acpi_q35_tcg_no_acpi_hotplug(void)
         " -device pci-testdev,bus=nohprp,acpi-index=501"
         " -device pcie-root-port,id=nohprpint,port=0x0,chassis=3,hotplug=off,"
                                  "multifunction=on,addr=8.0"
-        " -device pci-testdev,bus=nohprpint,acpi-index=601,addr=0.1"
+        " -device pci-testdev,bus=nohprpint,acpi-index=601,addr=8.1"
         " -device pcie-root-port,id=hprp2,port=0x0,chassis=4,bus=nohprpint,"
-                                 "addr=0.2"
+                                 "addr=9.0"
         " -device pci-testdev,bus=hprp2,acpi-index=602"
         , &data);
     free_test_data(&data);
@@ -1867,13 +1867,13 @@ static void test_acpi_q35_cxl(void)
                              " -device pxb-cxl,bus_nr=12,bus=pcie.0,id=cxl.1"
                              " -device pxb-cxl,bus_nr=222,bus=pcie.0,id=cxl.2"
                              " -device cxl-rp,port=0,bus=cxl.1,id=rp1,chassis=0,slot=2"
-                             " -device cxl-type3,bus=rp1,persistent-memdev=cxl-mem1,lsa=lsa1"
+                             " -device cxl-type3,bus=rp1,memdev=cxl-mem1,lsa=lsa1"
                              " -device cxl-rp,port=1,bus=cxl.1,id=rp2,chassis=0,slot=3"
-                             " -device cxl-type3,bus=rp2,persistent-memdev=cxl-mem2,lsa=lsa2"
+                             " -device cxl-type3,bus=rp2,memdev=cxl-mem2,lsa=lsa2"
                              " -device cxl-rp,port=0,bus=cxl.2,id=rp3,chassis=0,slot=5"
-                             " -device cxl-type3,bus=rp3,persistent-memdev=cxl-mem3,lsa=lsa3"
+                             " -device cxl-type3,bus=rp3,memdev=cxl-mem3,lsa=lsa3"
                              " -device cxl-rp,port=1,bus=cxl.2,id=rp4,chassis=0,slot=6"
-                             " -device cxl-type3,bus=rp4,persistent-memdev=cxl-mem4,lsa=lsa4"
+                             " -device cxl-type3,bus=rp4,memdev=cxl-mem4,lsa=lsa4"
                              " -M cxl-fmw.0.targets.0=cxl.1,cxl-fmw.0.size=4G,cxl-fmw.0.interleave-granularity=8k,"
                              "cxl-fmw.1.targets.0=cxl.1,cxl-fmw.1.targets.1=cxl.2,cxl-fmw.1.size=4G,cxl-fmw.1.interleave-granularity=8k",
                              tmp_path, tmp_path, tmp_path, tmp_path,
@@ -2164,7 +2164,7 @@ int main(int argc, char *argv[])
             }
         }
     } else if (strcmp(arch, "aarch64") == 0) {
-        if (has_tcg && qtest_has_device("virtio-blk-pci")) {
+        if (has_tcg) {
             qtest_add_func("acpi/virt", test_acpi_virt_tcg);
             qtest_add_func("acpi/virt/acpihmatvirt",
                             test_acpi_virt_tcg_acpi_hmat);

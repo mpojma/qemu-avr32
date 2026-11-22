@@ -954,10 +954,17 @@ static void register_generic_fuzz_targets(void)
             .crossover = generic_fuzz_crossover
     });
 
-    for (int i = 0; i < ARRAY_SIZE(predefined_configs); i++) {
-        const generic_fuzz_config *config = predefined_configs + i;
+    GString *name;
+    const generic_fuzz_config *config;
+
+    for (int i = 0;
+         i < sizeof(predefined_configs) / sizeof(generic_fuzz_config);
+         i++) {
+        config = predefined_configs + i;
+        name = g_string_new("generic-fuzz");
+        g_string_append_printf(name, "-%s", config->name);
         fuzz_add_target(&(FuzzTarget){
-                .name = g_strconcat("generic-fuzz-", config->name, NULL),
+                .name = name->str,
                 .description = "Predefined generic-fuzz config.",
                 .get_init_cmdline = generic_fuzz_predefined_config_cmdline,
                 .pre_fuzz = generic_pre_fuzz,

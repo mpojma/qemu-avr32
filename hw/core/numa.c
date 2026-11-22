@@ -531,17 +531,10 @@ static int parse_numa(void *opaque, QemuOpts *opts, Error **errp)
     /* Fix up legacy suffix-less format */
     if ((object->type == NUMA_OPTIONS_TYPE_NODE) && object->u.node.has_mem) {
         const char *mem_str = qemu_opt_get(opts, "mem");
-        int ret = qemu_strtosz_MiB(mem_str, NULL, &object->u.node.mem);
-
-        if (ret < 0) {
-            error_setg_errno(&err, -ret, "could not parse memory size '%s'",
-                             mem_str);
-        }
+        qemu_strtosz_MiB(mem_str, NULL, &object->u.node.mem);
     }
 
-    if (!err) {
-        set_numa_options(ms, object, &err);
-    }
+    set_numa_options(ms, object, &err);
 
     qapi_free_NumaOptions(object);
     if (err) {

@@ -24,9 +24,6 @@ hppa
 i386
   ~ (/qemu)?((/include)?/hw/i386/.*|/target/i386/.*|/hw/intc/[^/]*apic[^/]*\.c)
 
-loongarch
-  ~ (/qemu)?((/include)?/hw/(loongarch/.*|.*/loongarch.*)|/target/loongarch/.*)
-
 m68k
   ~ (/qemu)?((/include)?/hw/m68k/.*|/target/m68k/.*|(/include)?/hw(/.*)?/mcf.*|(/include)?/hw/nubus/.*)
 
@@ -39,14 +36,11 @@ mips
 nios2
   ~ (/qemu)?((/include)?/hw/nios2/.*|/target/nios2/.*)
 
-openrisc
-  ~ (/qemu)?((/include)?/hw/openrisc/.*|/target/openrisc/.*)
-
 ppc
   ~ (/qemu)?((/include)?/hw/ppc/.*|/target/ppc/.*|/hw/pci-host/(uninorth.*|dec.*|prep.*|ppc.*)|/hw/misc/macio/.*|(/include)?/hw/.*/(xics|openpic|spapr).*)
 
 riscv
-  ~ (/qemu)?((/include)?/hw/riscv/.*|/target/riscv/.*|/hw/.*/(riscv_|ibex_|sifive_).*)
+  ~ (/qemu)?((/include)?/hw/riscv/.*|/target/riscv/.*)
 
 rx
   ~ (/qemu)?((/include)?/hw/rx/.*|/target/rx/.*)
@@ -60,11 +54,11 @@ sh4
 sparc
   ~ (/qemu)?((/include)?/hw/sparc(64)?.*|/target/sparc/.*|/hw/.*/grlib.*|/hw/display/cg3.c)
 
+tilegx
+  ~ (/qemu)?(/target/tilegx/.*)
+
 tricore
   ~ (/qemu)?((/include)?/hw/tricore/.*|/target/tricore/.*)
-
-xtensa
-  ~ (/qemu)?((/include)?/hw/xtensa/.*|/target/xtensa/.*)
 
 9pfs
   ~ (/qemu)?(/hw/9pfs/.*|/fsdev/.*)
@@ -79,7 +73,7 @@ char
   ~ (/qemu)?(/qemu-char\.c|/include/sysemu/char\.h|(/include)?/hw/char/.*)
 
 crypto
-  ~ (/qemu)?((/include)?/crypto/.*|/hw/.*/.*crypto.*|(/include/sysemu|/backends)/cryptodev.*)
+  ~ (/qemu)?((/include)?/crypto/.*|/hw/.*/crypto.*)
 
 disas
   ~ (/qemu)?((/include)?/disas.*)
@@ -106,13 +100,16 @@ net
   ~ (/qemu)?((/include)?(/hw)?/(net|rdma)/.*)
 
 pci
-  ~ (/qemu)?(/include)?/hw/(cxl/|pci).*
+  ~ (/qemu)?(/hw/pci.*|/include/hw/pci.*)
 
 qemu-ga
   ~ (/qemu)?(/qga/.*)
 
 scsi
   ~ (/qemu)?(/scsi/.*|/hw/scsi/.*|/include/hw/scsi/.*)
+
+tcg
+  ~ (/qemu)?(/accel/tcg/.*|/replay/.*|/(.*/)?softmmu.*)
 
 trace
   ~ (/qemu)?(/.*trace.*\.[ch])
@@ -129,26 +126,8 @@ user
 util
   ~ (/qemu)?(/util/.*|/include/qemu/.*)
 
-vfio
-  ~ (/qemu)?(/include)?/hw/vfio/.*
-
-virtio
-  ~ (/qemu)?(/include)?/hw/virtio/.*
-
 xen
   ~ (/qemu)?(.*/xen.*)
-
-hvf
-  ~ (/qemu)?(.*/hvf.*)
-
-kvm
-  ~ (/qemu)?(.*/kvm.*)
-
-tcg
-  ~ (/qemu)?(/accel/tcg|/replay|/tcg)/.*
-
-sysemu
-  ~ (/qemu)?(/softmmu/.*|/accel/.*)
 
 (headers)
   ~ (/qemu)?(/include/.*)
@@ -158,3 +137,9 @@ testlibs
 
 tests
   ~ (/qemu)?(/tests/.*)
+
+loongarch
+  ~ (/qemu)?((/include)?/hw/(loongarch/.*|.*/loongarch.*)|/target/loongarch/.*)
+
+riscv
+  ~ (/qemu)?((/include)?/hw/riscv/.*|/target/riscv/.*|/hw/.*/(riscv_|ibex_|sifive_).*)

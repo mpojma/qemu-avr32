@@ -15,10 +15,18 @@
 
 #include "libqtest.h"
 
-bool migrate_watch_for_stop(QTestState *who, const char *name,
-                            QDict *event, void *opaque);
-bool migrate_watch_for_resume(QTestState *who, const char *name,
-                              QDict *event, void *opaque);
+extern bool got_stop;
+
+#ifndef _WIN32
+G_GNUC_PRINTF(3, 4)
+QDict *wait_command_fd(QTestState *who, int fd, const char *command, ...);
+#endif
+
+G_GNUC_PRINTF(2, 3)
+QDict *wait_command(QTestState *who, const char *command, ...);
+
+G_GNUC_PRINTF(2, 3)
+QDict *qmp_command(QTestState *who, const char *command, ...);
 
 G_GNUC_PRINTF(3, 4)
 void migrate_qmp(QTestState *who, const char *uri, const char *fmt, ...);

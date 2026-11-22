@@ -448,20 +448,20 @@ target_ulong helper_pext(target_ulong src, target_ulong mask)
 }
 
 #define SHIFT 0
-#include "shift_helper_template.h.inc"
+#include "shift_helper_template.h"
 #undef SHIFT
 
 #define SHIFT 1
-#include "shift_helper_template.h.inc"
+#include "shift_helper_template.h"
 #undef SHIFT
 
 #define SHIFT 2
-#include "shift_helper_template.h.inc"
+#include "shift_helper_template.h"
 #undef SHIFT
 
 #ifdef TARGET_X86_64
 #define SHIFT 3
-#include "shift_helper_template.h.inc"
+#include "shift_helper_template.h"
 #undef SHIFT
 #endif
 

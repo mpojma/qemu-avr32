@@ -61,7 +61,6 @@
 
 #include "hw/ppc/fdt.h"
 #include "hw/ppc/spapr.h"
-#include "hw/ppc/spapr_nested.h"
 #include "hw/ppc/spapr_vio.h"
 #include "hw/ppc/vof.h"
 #include "hw/qdev-properties.h"
@@ -547,8 +546,10 @@ static int spapr_dt_dynamic_reconfiguration_memory(SpaprMachineState *spapr,
                                 cpu_to_be32(lmb_size & 0xffffffff)};
     MemoryDeviceInfoList *dimms = NULL;
 
-    /* Don't create the node if there is no device memory. */
-    if (!machine->device_memory) {
+    /*
+     * Don't create the node if there is no device memory
+     */
+    if (machine->ram_size == machine->maxram_size) {
         return 0;
     }
 
@@ -858,22 +859,15 @@ static void spapr_dt_rtas(SpaprMachineState *spapr, void *fdt)
     int rtas;
     GString *hypertas = g_string_sized_new(256);
     GString *qemu_hypertas = g_string_sized_new(256);
+    uint64_t max_device_addr = MACHINE(spapr)->device_memory->base +
+        memory_region_size(&MACHINE(spapr)->device_memory->mr);
     uint32_t lrdr_capacity[] = {
-        0,
-        0,
+        cpu_to_be32(max_device_addr >> 32),
+        cpu_to_be32(max_device_addr & 0xffffffff),
         cpu_to_be32(SPAPR_MEMORY_BLOCK_SIZE >> 32),
         cpu_to_be32(SPAPR_MEMORY_BLOCK_SIZE & 0xffffffff),
         cpu_to_be32(ms->smp.max_cpus / ms->smp.threads),
     };
-
-    /* Do we have device memory? */
-    if (MACHINE(spapr)->device_memory) {
-        uint64_t max_device_addr = MACHINE(spapr)->device_memory->base +
-            memory_region_size(&MACHINE(spapr)->device_memory->mr);
-
-        lrdr_capacity[0] = cpu_to_be32(max_device_addr >> 32);
-        lrdr_capacity[1] = cpu_to_be32(max_device_addr & 0xffffffff);
-    }
 
     _FDT(rtas = fdt_add_subnode(fdt, 0, "rtas"));
 
@@ -2172,7 +2166,7 @@ static void htab_save_first_pass(QEMUFile *f, SpaprMachineState *spapr,
                 break;
             }
         }
-    } while ((index < htabslots) && !migration_rate_exceeded(f));
+    } while ((index < htabslots) && !qemu_file_rate_limit(f));
 
     if (index >= htabslots) {
         assert(index == htabslots);
@@ -2243,7 +2237,7 @@ static int htab_save_later_pass(QEMUFile *f, SpaprMachineState *spapr,
             assert(index == htabslots);
             index = 0;
         }
-    } while ((examined < htabslots) && (!migration_rate_exceeded(f) || final));
+    } while ((examined < htabslots) && (!qemu_file_rate_limit(f) || final));
 
     if (index >= htabslots) {
         assert(index == htabslots);
@@ -2460,7 +2454,6 @@ static void spapr_create_lmb_dr_connectors(SpaprMachineState *spapr)
     uint32_t nr_lmbs = (machine->maxram_size - machine->ram_size)/lmb_size;
     int i;
 
-    g_assert(!nr_lmbs || machine->device_memory);
     for (i = 0; i < nr_lmbs; i++) {
         uint64_t addr;
 
@@ -2531,19 +2524,10 @@ static void spapr_set_vsmt_mode(SpaprMachineState *spapr, Error **errp)
     int ret;
     unsigned int smp_threads = ms->smp.threads;
 
-    if (tcg_enabled()) {
-        if (smp_threads > 1 &&
-            !ppc_type_check_compat(ms->cpu_type, CPU_POWERPC_LOGICAL_2_07, 0,
-                                   spapr->max_compat_pvr)) {
-            error_setg(errp, "TCG only supports SMT on POWER8 or newer CPUs");
-            return;
-        }
-
-        if (smp_threads > 8) {
-            error_setg(errp, "TCG cannot support more than 8 threads/core "
-                       "on a pseries machine");
-            return;
-        }
+    if (!kvm_enabled() && (smp_threads > 1)) {
+        error_setg(errp, "TCG cannot support more than 1 thread/core "
+                   "on a pseries machine");
+        return;
     }
     if (!is_power_of_2(smp_threads)) {
         error_setg(errp, "Cannot support %d threads/core on a pseries "
@@ -2882,11 +2866,12 @@ static void spapr_machine_init(MachineState *machine)
     /* map RAM */
     memory_region_add_subregion(sysmem, 0, machine->ram);
 
+    /* always allocate the device memory information */
+    machine->device_memory = g_malloc0(sizeof(*machine->device_memory));
+
     /* initialize hotplug memory address space */
     if (machine->ram_size < machine->maxram_size) {
         ram_addr_t device_mem_size = machine->maxram_size - machine->ram_size;
-        hwaddr device_mem_base;
-
         /*
          * Limit the number of hotpluggable memory slots to half the number
          * slots that KVM supports, leaving the other half for PCI and other
@@ -2905,8 +2890,12 @@ static void spapr_machine_init(MachineState *machine)
             exit(1);
         }
 
-        device_mem_base = ROUND_UP(machine->ram_size, SPAPR_DEVICE_MEM_ALIGN);
-        machine_memory_devices_init(machine, device_mem_base, device_mem_size);
+        machine->device_memory->base = ROUND_UP(machine->ram_size,
+                                                SPAPR_DEVICE_MEM_ALIGN);
+        memory_region_init(&machine->device_memory->mr, OBJECT(spapr),
+                           "device-memory", device_mem_size);
+        memory_region_add_subregion(sysmem, machine->device_memory->base,
+                                    &machine->device_memory->mr);
     }
 
     if (smc->dr_lmb_enabled) {
@@ -4642,7 +4631,7 @@ static void spapr_machine_class_init(ObjectClass *oc, void *data)
 
     smc->dr_lmb_enabled = true;
     smc->update_dt_enabled = true;
-    mc->default_cpu_type = POWERPC_CPU_TYPE_NAME("power9_v2.2");
+    mc->default_cpu_type = POWERPC_CPU_TYPE_NAME("power9_v2.0");
     mc->has_hotpluggable_cpus = true;
     mc->nvdimm_supported = true;
     smc->resize_hpt_default = SPAPR_RESIZE_HPT_ENABLED;
@@ -4684,13 +4673,6 @@ static void spapr_machine_class_init(ObjectClass *oc, void *data)
     smc->default_caps.caps[SPAPR_CAP_CCF_ASSIST] = SPAPR_CAP_ON;
     smc->default_caps.caps[SPAPR_CAP_FWNMI] = SPAPR_CAP_ON;
     smc->default_caps.caps[SPAPR_CAP_RPT_INVALIDATE] = SPAPR_CAP_OFF;
-
-    /*
-     * This cap specifies whether the AIL 3 mode for
-     * H_SET_RESOURCE is supported. The default is modified
-     * by default_caps_with_cpu().
-     */
-    smc->default_caps.caps[SPAPR_CAP_AIL_MODE_3] = SPAPR_CAP_ON;
     spapr_caps_add_properties(smc);
     smc->irq = &spapr_irq_dual;
     smc->dr_phb_enabled = true;
@@ -5120,7 +5102,7 @@ static bool phb_placement_2_7(SpaprMachineState *spapr, uint32_t index,
     int i;
 
     /* Do we have device memory? */
-    if (MACHINE(spapr)->device_memory) {
+    if (MACHINE(spapr)->maxram_size > ram_top) {
         /* Can't just use maxram_size, because there may be an
          * alignment gap between normal and device memory regions
          */

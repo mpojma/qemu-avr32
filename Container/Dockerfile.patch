@@ -1,0 +1,16 @@
+# Rebuild only the patched files on top of the already-configured original
+# image. Much faster and avoids submodule/symlink issues from a fresh COPY.
+#   podman build -f Container/Dockerfile.patch -t qemu-avr32-local .
+FROM localhost/qemu-avr32:latest
+
+# Overlay the three fixed source files from the local tree
+COPY qemu-avr32/hw/avr32/fm33256b.c          /src/hw/avr32/fm33256b.c
+COPY qemu-avr32/target/avr32/cpu.c           /src/target/avr32/cpu.c
+COPY qemu-avr32/target/avr32/disas.c         /src/target/avr32/disas.c
+COPY qemu-avr32/target/avr32/translate.c     /src/target/avr32/translate.c
+
+WORKDIR /src/build
+RUN make -j"$(nproc)" && make install
+
+WORKDIR /workspace
+ENTRYPOINT ["qemu-system-avr32"]

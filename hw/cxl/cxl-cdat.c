@@ -108,21 +108,31 @@ static void ct3_build_cdat(CDATObject *cdat, Error **errp)
 static void ct3_load_cdat(CDATObject *cdat, Error **errp)
 {
     g_autofree CDATEntry *cdat_st = NULL;
-    g_autofree char *buf = NULL;
     uint8_t sum = 0;
     int num_ent;
-    int i = 0, ent = 1;
-    gsize file_size = 0;
+    int i = 0, ent = 1, file_size = 0;
     CDATSubHeader *hdr;
-    GError *error = NULL;
+    FILE *fp = NULL;
 
     /* Read CDAT file and create its cache */
-    if (!g_file_get_contents(cdat->filename, (gchar **)&buf,
-                             &file_size, &error)) {
-        error_setg(errp, "CDAT: File read failed: %s", error->message);
-        g_error_free(error);
+    fp = fopen(cdat->filename, "r");
+    if (!fp) {
+        error_setg(errp, "CDAT: Unable to open file");
         return;
     }
+
+    fseek(fp, 0, SEEK_END);
+    file_size = ftell(fp);
+    fseek(fp, 0, SEEK_SET);
+    cdat->buf = g_malloc0(file_size);
+
+    if (fread(cdat->buf, file_size, 1, fp) == 0) {
+        error_setg(errp, "CDAT: File read failed");
+        return;
+    }
+
+    fclose(fp);
+
     if (file_size < sizeof(CDATTableHeader)) {
         error_setg(errp, "CDAT: File too short");
         return;
@@ -130,17 +140,9 @@ static void ct3_load_cdat(CDATObject *cdat, Error **errp)
     i = sizeof(CDATTableHeader);
     num_ent = 1;
     while (i < file_size) {
-        hdr = (CDATSubHeader *)(buf + i);
-        if (i + sizeof(CDATSubHeader) > file_size) {
-            error_setg(errp, "CDAT: Truncated table");
-            return;
-        }
+        hdr = (CDATSubHeader *)(cdat->buf + i);
         cdat_len_check(hdr, errp);
         i += hdr->length;
-        if (i > file_size) {
-            error_setg(errp, "CDAT: Truncated table");
-            return;
-        }
         num_ent++;
     }
     if (i != file_size) {
@@ -148,26 +150,33 @@ static void ct3_load_cdat(CDATObject *cdat, Error **errp)
         return;
     }
 
-    cdat_st = g_new0(CDATEntry, num_ent);
+    cdat_st = g_malloc0(sizeof(*cdat_st) * num_ent);
+    if (!cdat_st) {
+        error_setg(errp, "CDAT: Failed to allocate entry array");
+        return;
+    }
 
     /* Set CDAT header, Entry = 0 */
-    cdat_st[0].base = buf;
+    cdat_st[0].base = cdat->buf;
     cdat_st[0].length = sizeof(CDATTableHeader);
     i = 0;
 
     while (i < cdat_st[0].length) {
-        sum += buf[i++];
+        sum += cdat->buf[i++];
     }
 
     /* Read CDAT structures */
     while (i < file_size) {
-        hdr = (CDATSubHeader *)(buf + i);
+        hdr = (CDATSubHeader *)(cdat->buf + i);
+        cdat_len_check(hdr, errp);
+
         cdat_st[ent].base = hdr;
         cdat_st[ent].length = hdr->length;
 
-        while (buf + i < (char *)cdat_st[ent].base + cdat_st[ent].length) {
+        while (cdat->buf + i <
+               (uint8_t *)cdat_st[ent].base + cdat_st[ent].length) {
             assert(i < file_size);
-            sum += buf[i++];
+            sum += cdat->buf[i++];
         }
 
         ent++;
@@ -178,7 +187,6 @@ static void ct3_load_cdat(CDATObject *cdat, Error **errp)
     }
     cdat->entry_len = num_ent;
     cdat->entry = g_steal_pointer(&cdat_st);
-    cdat->buf = g_steal_pointer(&buf);
 }
 
 void cxl_doe_cdat_init(CXLComponentState *cxl_cstate, Error **errp)
@@ -210,5 +218,7 @@ void cxl_doe_cdat_release(CXLComponentState *cxl_cstate)
         cdat->free_cdat_table(cdat->built_buf, cdat->built_buf_len,
                               cdat->private);
     }
-    g_free(cdat->buf);
+    if (cdat->buf) {
+        free(cdat->buf);
+    }
 }

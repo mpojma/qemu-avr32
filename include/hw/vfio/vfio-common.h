@@ -66,10 +66,6 @@ typedef struct VFIOMigration {
     int data_fd;
     void *data_buffer;
     size_t data_buffer_size;
-    uint64_t mig_flags;
-    uint64_t precopy_init_size;
-    uint64_t precopy_dirty_size;
-    bool initial_data_sent;
 } VFIOMigration;
 
 typedef struct VFIOAddressSpace {
@@ -139,7 +135,7 @@ typedef struct VFIODevice {
     bool needs_reset;
     bool no_mmap;
     bool ram_block_discard_allowed;
-    OnOffAuto enable_migration;
+    bool enable_migration;
     VFIODeviceOps *ops;
     unsigned int num_irqs;
     unsigned int num_regions;
@@ -216,7 +212,6 @@ void vfio_region_finalize(VFIORegion *region);
 void vfio_reset_handler(void *opaque);
 VFIOGroup *vfio_get_group(int groupid, AddressSpace *as, Error **errp);
 void vfio_put_group(VFIOGroup *group);
-struct vfio_device_info *vfio_get_device_info(int fd);
 int vfio_get_device(VFIOGroup *group, const char *name,
                     VFIODevice *vbasedev, Error **errp);
 
@@ -225,11 +220,10 @@ typedef QLIST_HEAD(VFIOGroupList, VFIOGroup) VFIOGroupList;
 extern VFIOGroupList vfio_group_list;
 
 bool vfio_mig_active(void);
-int vfio_block_multiple_devices_migration(VFIODevice *vbasedev, Error **errp);
+int vfio_block_multiple_devices_migration(Error **errp);
 void vfio_unblock_multiple_devices_migration(void);
-bool vfio_viommu_preset(VFIODevice *vbasedev);
+int vfio_block_giommu_migration(Error **errp);
 int64_t vfio_mig_bytes_transferred(void);
-void vfio_reset_bytes_transferred(void);
 
 #ifdef CONFIG_LINUX
 int vfio_get_region_info(VFIODevice *vbasedev, int index,
@@ -252,7 +246,8 @@ int vfio_spapr_create_window(VFIOContainer *container,
 int vfio_spapr_remove_window(VFIOContainer *container,
                              hwaddr offset_within_address_space);
 
-bool vfio_migration_realize(VFIODevice *vbasedev, Error **errp);
+int vfio_migration_realize(VFIODevice *vbasedev, Error **errp);
 void vfio_migration_exit(VFIODevice *vbasedev);
+void vfio_migration_finalize(void);
 
 #endif /* HW_VFIO_VFIO_COMMON_H */

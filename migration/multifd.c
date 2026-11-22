@@ -19,7 +19,6 @@
 #include "qapi/error.h"
 #include "ram.h"
 #include "migration.h"
-#include "migration-stats.h"
 #include "socket.h"
 #include "tls.h"
 #include "qemu-file.h"
@@ -175,7 +174,6 @@ void multifd_register_ops(int method, MultiFDMethods *ops)
 static int multifd_send_initial_packet(MultiFDSendParams *p, Error **errp)
 {
     MultiFDInit_t msg = {};
-    size_t size = sizeof(msg);
     int ret;
 
     msg.magic = cpu_to_be32(MULTIFD_MAGIC);
@@ -183,12 +181,10 @@ static int multifd_send_initial_packet(MultiFDSendParams *p, Error **errp)
     msg.id = p->id;
     memcpy(msg.uuid, &qemu_uuid.data, sizeof(msg.uuid));
 
-    ret = qio_channel_write_all(p->c, (char *)&msg, size, errp);
+    ret = qio_channel_write_all(p->c, (char *)&msg, sizeof(msg), errp);
     if (ret != 0) {
         return -1;
     }
-    stat64_add(&mig_stats.multifd_bytes, size);
-    stat64_add(&mig_stats.transferred, size);
     return 0;
 }
 
@@ -284,6 +280,7 @@ static void multifd_send_fill_packet(MultiFDSendParams *p)
 static int multifd_recv_unfill_packet(MultiFDRecvParams *p, Error **errp)
 {
     MultiFDPacket_t *packet = p->packet;
+    RAMBlock *block;
     int i;
 
     packet->magic = be32_to_cpu(packet->magic);
@@ -333,21 +330,21 @@ static int multifd_recv_unfill_packet(MultiFDRecvParams *p, Error **errp)
 
     /* make sure that ramblock is 0 terminated */
     packet->ramblock[255] = 0;
-    p->block = qemu_ram_block_by_name(packet->ramblock);
-    if (!p->block) {
+    block = qemu_ram_block_by_name(packet->ramblock);
+    if (!block) {
         error_setg(errp, "multifd: unknown ram block %s",
                    packet->ramblock);
         return -1;
     }
 
-    p->host = p->block->host;
+    p->host = block->host;
     for (i = 0; i < p->normal_num; i++) {
         uint64_t offset = be64_to_cpu(packet->offset[i]);
 
-        if (offset > (p->block->used_length - p->page_size)) {
+        if (offset > (block->used_length - p->page_size)) {
             error_setg(errp, "multifd: offset too long %" PRIu64
                        " (max " RAM_ADDR_FMT ")",
-                       offset, p->block->used_length);
+                       offset, block->used_length);
             return -1;
         }
         p->normal[i] = offset;
@@ -398,6 +395,7 @@ static int multifd_send_pages(QEMUFile *f)
     static int next_channel;
     MultiFDSendParams *p = NULL; /* make happy gcc */
     MultiFDPages_t *pages = multifd_send_state->pages;
+    uint64_t transferred;
 
     if (qatomic_read(&multifd_send_state->exiting)) {
         return -1;
@@ -432,7 +430,11 @@ static int multifd_send_pages(QEMUFile *f)
     p->packet_num = multifd_send_state->packet_num++;
     multifd_send_state->pages = p->pages;
     p->pages = pages;
+    transferred = ((uint64_t) pages->num) * p->page_size + p->packet_len;
+    qemu_file_acct_rate_limit(f, transferred);
     qemu_mutex_unlock(&p->mutex);
+    stat64_add(&ram_counters.transferred, transferred);
+    stat64_add(&ram_counters.multifd_bytes, transferred);
     qemu_sem_post(&p->sem);
 
     return 1;
@@ -574,7 +576,7 @@ static int multifd_zero_copy_flush(QIOChannel *c)
         return -1;
     }
     if (ret == 1) {
-        stat64_add(&mig_stats.dirty_sync_missed_zero_copy, 1);
+        stat64_add(&ram_counters.dirty_sync_missed_zero_copy, 1);
     }
 
     return ret;
@@ -624,7 +626,10 @@ int multifd_send_sync_main(QEMUFile *f)
         p->packet_num = multifd_send_state->packet_num++;
         p->flags |= MULTIFD_FLAG_SYNC;
         p->pending_job++;
+        qemu_file_acct_rate_limit(f, p->packet_len);
         qemu_mutex_unlock(&p->mutex);
+        stat64_add(&ram_counters.transferred, p->packet_len);
+        stat64_add(&ram_counters.multifd_bytes, p->packet_len);
         qemu_sem_post(&p->sem);
     }
     for (i = 0; i < migrate_multifd_channels(); i++) {
@@ -651,7 +656,7 @@ static void *multifd_send_thread(void *opaque)
     int ret = 0;
     bool use_zero_copy_send = migrate_zero_copy_send();
 
-    thread = migration_threads_add(p->name, qemu_get_thread_id());
+    thread = MigrationThreadAdd(p->name, qemu_get_thread_id());
 
     trace_multifd_send_thread_start(p->id);
     rcu_register_thread();
@@ -714,8 +719,6 @@ static void *multifd_send_thread(void *opaque)
                 if (ret != 0) {
                     break;
                 }
-                stat64_add(&mig_stats.multifd_bytes, p->packet_len);
-                stat64_add(&mig_stats.transferred, p->packet_len);
             } else {
                 /* Send header using the same writev call */
                 p->iov[0].iov_len = p->packet_len;
@@ -728,8 +731,6 @@ static void *multifd_send_thread(void *opaque)
                 break;
             }
 
-            stat64_add(&mig_stats.multifd_bytes, p->next_packet_size);
-            stat64_add(&mig_stats.transferred, p->next_packet_size);
             qemu_mutex_lock(&p->mutex);
             p->pending_job--;
             qemu_mutex_unlock(&p->mutex);
@@ -767,7 +768,7 @@ out:
     qemu_mutex_unlock(&p->mutex);
 
     rcu_unregister_thread();
-    migration_threads_remove(thread);
+    MigrationThreadDel(thread);
     trace_multifd_send_thread_end(p->id, p->num_packets, p->total_normal_pages);
 
     return NULL;
@@ -822,7 +823,7 @@ static void multifd_tls_channel_connect(MultiFDSendParams *p,
     const char *hostname = s->hostname;
     QIOChannelTLS *tioc;
 
-    tioc = migration_tls_client_create(ioc, hostname, errp);
+    tioc = migration_tls_client_create(s, ioc, hostname, errp);
     if (!tioc) {
         return;
     }
@@ -878,7 +879,7 @@ static void multifd_new_send_channel_cleanup(MultiFDSendParams *p,
      qemu_sem_post(&p->sem_sync);
      /*
       * Although multifd_send_thread is not created, but main migration
-      * thread need to judge whether it is running, so we need to mark
+      * thread neet to judge whether it is running, so we need to mark
       * its status.
       */
      p->quit = true;
@@ -894,7 +895,7 @@ static void multifd_new_send_channel_async(QIOTask *task, gpointer opaque)
 
     trace_multifd_new_send_channel_async(p->id);
     if (!qio_task_propagate_error(task, &local_err)) {
-        p->c = sioc;
+        p->c = QIO_CHANNEL(sioc);
         qio_channel_set_delay(p->c, false);
         p->running = true;
         if (multifd_channel_connect(p, sioc, local_err)) {

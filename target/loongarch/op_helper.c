@@ -49,16 +49,14 @@ target_ulong helper_bitswap(target_ulong v)
 void helper_asrtle_d(CPULoongArchState *env, target_ulong rj, target_ulong rk)
 {
     if (rj > rk) {
-        env->CSR_BADV = rj;
-        do_raise_exception(env, EXCCODE_BCE, GETPC());
+        do_raise_exception(env, EXCCODE_BCE, 0);
     }
 }
 
 void helper_asrtgt_d(CPULoongArchState *env, target_ulong rj, target_ulong rk)
 {
     if (rj <= rk) {
-        env->CSR_BADV = rj;
-        do_raise_exception(env, EXCCODE_BCE, GETPC());
+        do_raise_exception(env, EXCCODE_BCE, 0);
     }
 }
 
